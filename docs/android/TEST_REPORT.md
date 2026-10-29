@@ -111,3 +111,12 @@ diagnostics text from Settings → Diagnostics.
   an explicit error is shown.
 - Phone actions return the native result (including “no app matched”, “several
   matches”, “notification permission not granted”).
+
+## GitHub Actions runs
+
+| Run | Result | Cause |
+| --- | --- | --- |
+| #3 (commit `bbfa13d`) | ❌ failed in 16 s, before any project code ran | `android-actions/setup-android@v3` executes `sdkmanager tools`; Google removed the standalone `tools` package, so the action aborted with `Warning: Failed to find package 'tools'` |
+| next | see the Actions tab | workflow now uses the runner's preinstalled SDK: accepts licences, installs `platforms;android-35` + `build-tools;35.0.0` only, then runs tests, build, `cap sync`, Gradle and the APK verification |
+
+The project itself was not implicated in run #3 — checkout, `npm ci`, tests, build and Gradle never executed. The same Gradle task sequence succeeds locally (`BUILD SUCCESSFUL`, 6,550,482-byte APK).

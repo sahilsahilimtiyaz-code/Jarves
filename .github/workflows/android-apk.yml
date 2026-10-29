@@ -49,15 +49,28 @@ jobs:
           distribution: temurin
           java-version: 21
 
-      - name: Set up Android SDK (platform 35 + build-tools)
-        uses: android-actions/setup-android@v3
-
-      - name: Install Android SDK packages
+      # Deliberately NOT android-actions/setup-android: that action runs
+      # `sdkmanager tools`, and Google removed the standalone `tools` package,
+      # so the job died before Gradle started (run #3). The GitHub-hosted image
+      # already ships cmdline-tools, platform-tools and platform 35; we only
+      # accept licences and make sure the two packages AGP needs are present.
+      - name: Prepare the preinstalled Android SDK
         run: |
           set -euo pipefail
-          sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
-          yes | sdkmanager --licenses > /dev/null || true
-          echo "ANDROID_HOME=$ANDROID_HOME"
+          export ANDROID_HOME="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          SDKMANAGER="$(find "$ANDROID_HOME/cmdline-tools" -maxdepth 3 -name sdkmanager -type f 2>/dev/null | sort -V | tail -n 1)"
+          if [ -z "$SDKMANAGER" ]; then
+            echo "::error::No sdkmanager found under $ANDROID_HOME/cmdline-tools"
+            exit 1
+          fi
+          echo "Using $SDKMANAGER"
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          test -d "$ANDROID_HOME/platforms/android-35"
+          echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
+          echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
+          java -version
 
       - name: Install dependencies (lockfile, no upgrades)
         working-directory: web
@@ -89,7 +102,7 @@ jobs:
         run: |
           set -euo pipefail
           chmod +x gradlew
-          ./gradlew assembleDebug --no-daemon --stacktrace
+          ./gradlew assembleDebug --no-daemon --stacktrace --console=plain
 
       - name: Verify the APK exists, is non-empty and contains the web bundle
         id: verify
