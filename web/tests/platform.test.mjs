@@ -17,6 +17,7 @@ async function loadTS(relpath) {
 const backend = await loadTS("../src/lib/backend.ts");
 const backoff = await loadTS("../src/lib/backoff.ts");
 const detect = await loadTS("../src/platform/detect.ts");
+const native = await loadTS("../src/platform/native.ts");
 
 test("normalizeBackendUrl: scheme-less LAN addresses get a default http scheme", () => {
   assert.equal(backend.normalizeBackendUrl("192.168.1.20:7341"), "http://192.168.1.20:7341");
@@ -111,4 +112,18 @@ test("detectPlatform: Capacitor global without native platform = plain web", () 
 
 test("detectPlatform: no window at all = web", () => {
   assert.equal(detect.detectPlatform(), "web");
+});
+
+test("withTimeout: resolves normally", async () => {
+  const p = new Promise(resolve => setTimeout(() => resolve("ok"), 10));
+  const res = await native.withTimeout(p, "test", 100);
+  assert.equal(res, "ok");
+});
+
+test("withTimeout: rejects on timeout", async () => {
+  const p = new Promise(resolve => setTimeout(() => resolve("ok"), 100));
+  await assert.rejects(
+    () => native.withTimeout(p, "dbQuery", 10),
+    /The Android bridge did not answer “dbQuery” within/
+  );
 });
