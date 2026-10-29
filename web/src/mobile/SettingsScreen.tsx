@@ -14,6 +14,7 @@ import { useBackendHealth, useVoiceStatus } from "./hooks";
 import { voicePipeline } from "../lib/voicePipeline";
 import { voiceStateLabel } from "../lib/voiceState";
 import * as native from "../platform/native";
+import TtsPanel from "./TtsPanel";
 import { detectPlatform } from "../platform";
 import { Card, Chip, Row, ScreenHeader, Section, Toggle } from "./ui";
 import type { ScreenProps } from "./types";
@@ -50,6 +51,7 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
   const [diagnosticsCopied, setDiagnosticsCopied] = useState(false);
   const [micTest, setMicTest] = useState<string | null>(null);
   const [voiceTestState, setVoiceTestState] = useState<string | null>(null);
+  const [permNotice, setPermNotice] = useState<string | null>(null);
 
   const refreshNative = useCallback(async () => {
     const available = await native.nativeAvailable().catch(() => false);
@@ -117,6 +119,25 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
     } catch (e) {
       setMicTest(e instanceof Error ? e.message : "Microphone test failed.");
     }
+    await refreshNative();
+  };
+
+  /** Ask for every runtime permission the app can actually use, one by one. */
+  const requestAll = async () => {
+    setPermNotice("requesting");
+    const results: string[] = [];
+    const attempt = async (label: string, task: () => Promise<{ granted?: boolean } | void>) => {
+      try {
+        const value: any = await task();
+        results.push(`${label} ${value?.granted === false ? "denied" : "granted"}`);
+      } catch {
+        results.push(`${label} unavailable`);
+      }
+    };
+    await attempt("microphone", () => native.requestMicPermission());
+    await attempt("camera", () => native.requestCameraPermission());
+    await attempt("notifications", () => native.requestNotificationPermission());
+    setPermNotice(results.join(" · "));
     await refreshNative();
   };
 
@@ -301,6 +322,8 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
             <p className="m-row-sub mt-2">System voices: {voices.slice(0, 4).join(", ")}{voices.length > 4 ? ` +${voices.length - 4}` : ""}</p>
           )}
         </Card>
+
+        <TtsPanel />
       </Section>
 
       <Section title="Permissions">
@@ -338,11 +361,61 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
               </button>
             }
           />
-          <button type="button" className="m-btn mt-2 w-full" onClick={() => void requestMic()}>
-            Request microphone access
-          </button>
+          <Row
+            title="Files & photos"
+            subtitle="Storage Access Framework: the app only ever sees the file you pick"
+            right={
+              <button
+                type="button"
+                className="m-btn"
+                data-size="sm"
+                onClick={() =>
+                  void native
+                    .pickFile()
+                    .then((file) =>
+                      setPermNotice(
+                        file?.cancelled
+                          ? "File picker closed."
+                          : file?.name
+                            ? `Selected ${file.name} (${file.size ?? 0} bytes). Access is scoped to that file.`
+                            : "No file was selected.",
+                      ),
+                    )
+                    .catch((e) => setPermNotice(e instanceof Error ? e.message : "The file picker failed."))
+                }
+              >
+                Choose
+              </button>
+            }
+          />
+          <Row
+            title="Device control"
+            subtitle="Launch apps, open settings screens, read battery/device data and use the clipboard. Android grants no permission to change protected settings or read other apps' data."
+            right={<span className="m-chip" data-tone="warn">limited</span>}
+          />
+          <div className="mt-2 flex flex-wrap gap-2">
+            <button type="button" className="m-btn" data-variant="primary" onClick={() => void requestAll()} disabled={permNotice === "requesting"}>
+              {permNotice === "requesting" ? "Requesting…" : "Request all permissions"}
+            </button>
+            <button type="button" className="m-btn" onClick={() => void requestMic()}>
+              Microphone
+            </button>
+            <button
+              type="button"
+              className="m-btn"
+              onClick={() =>
+                void native
+                  .openAppSettings()
+                  .then((result) => setPermNotice(result?.ok ? "Android app settings opened." : result?.message || "Could not open settings."))
+                  .catch(() => setPermNotice("Could not open Android settings."))
+              }
+            >
+              App settings
+            </button>
+          </div>
+          {permNotice && permNotice !== "requesting" && <p className="m-row-sub mt-2">{permNotice}</p>}
           <p className="m-row-sub mt-2">
-            If Android permanently denies a permission, enable it in system settings → Apps → J.A.R.V.I.S. → Permissions.
+            A permanent denial ("Don't allow again") can only be changed in Android settings → Apps → J.A.R.V.I.S. → Permissions.
           </p>
         </Card>
       </Section>

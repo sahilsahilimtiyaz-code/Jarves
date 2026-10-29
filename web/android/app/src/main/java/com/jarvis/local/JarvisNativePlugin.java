@@ -1390,6 +1390,54 @@ public class JarvisNativePlugin extends Plugin {
         call.resolve(out);
     }
 
+    // ── Binary HTTP for speech providers (base64 audio) ─────────────────────
+
+    @PluginMethod
+    public void httpRequestBase64(final PluginCall call) {
+        final String url = call.getString("url");
+        if (url == null || url.isEmpty()) {
+            call.reject("A URL is required.");
+            return;
+        }
+        final String method = call.getString("method", "POST");
+        final String body = call.getString("body", "");
+        final int timeout = call.getInt("timeoutMs", 45000);
+        final boolean allowInsecure = Boolean.TRUE.equals(call.getBoolean("allowInsecure", false));
+        final JSObject headers = call.getObject("headers", new JSObject());
+        new Thread(() -> {
+            try {
+                JSONObject result = JarvisHttp.requestBase64(url, method, new JSONObject(headers.toString()), body, timeout, allowInsecure);
+                JSObject out = new JSObject();
+                out.put("status", result.optInt("status", 0));
+                out.put("mime", result.optString("mime", ""));
+                out.put("base64", result.optString("base64", ""));
+                out.put("body", result.optString("body", ""));
+                call.resolve(out);
+            } catch (Exception e) {
+                call.reject("Speech request failed: " + safeMessage(e));
+            }
+        }).start();
+    }
+
+    /** Deep link to this app's system permission page (for permanent denials). */
+    @PluginMethod
+    public void openAppSettings(PluginCall call) {
+        try {
+            Intent intent = new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS);
+            intent.setData(Uri.parse("package:" + getContext().getPackageName()));
+            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            getContext().startActivity(intent);
+            JSObject out = new JSObject();
+            out.put("ok", true);
+            call.resolve(out);
+        } catch (Exception e) {
+            JSObject out = new JSObject();
+            out.put("ok", false);
+            out.put("message", "Android settings could not be opened: " + safeMessage(e));
+            call.resolve(out);
+        }
+    }
+
     private byte[] readAll(InputStream in, long limit) throws Exception {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();
         byte[] chunk = new byte[8192];

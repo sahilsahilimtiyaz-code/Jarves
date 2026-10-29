@@ -115,6 +115,32 @@ void main() {
 }
 `;
 
+const BLOOM_FRAGMENT = `
+uniform float uTime;
+uniform float uLevel;
+uniform float uEnergy;
+uniform vec3 uColor;
+uniform float uOpacity;
+varying vec2 vUv;
+
+float hash(vec2 p) {
+  return fract(sin(dot(p, vec2(127.1, 311.7))) * 43758.5453);
+}
+
+void main() {
+  vec2 p = vUv * 2.0 - 1.0;
+  float r = length(p);
+  float angle = atan(p.y, p.x);
+  float rays = pow(max(0.0, sin(angle * 9.0 + uTime * 0.35)), 8.0);
+  float inner = smoothstep(0.020, 0.0, abs(r - 0.50));
+  float outer = smoothstep(0.016, 0.0, abs(r - 0.86));
+  float glow = exp(-r * 2.7) * 0.55 + rays * smoothstep(0.95, 0.25, r) * 0.24 + (inner * 0.5 + outer * 0.7) * 0.45;
+  float sparkle = hash(floor(p * 26.0) + floor(uTime * 2.4)) * 0.045;
+  float alpha = (glow + sparkle) * (0.30 + uLevel * 0.60 + uEnergy * 0.38) * (1.0 - smoothstep(0.86, 1.0, r));
+  gl_FragColor = vec4(uColor, clamp(alpha, 0.0, 0.9) * uOpacity);
+}
+`;
+
 const BASIC_VERTEX = `
 varying vec2 vUv;
 void main() {
@@ -198,6 +224,48 @@ export default function JarvisCore({
     const halo = new THREE.Mesh(haloGeometry, haloMaterial);
     halo.position.z = -1.1;
     scene.add(halo);
+
+    // ── Volumetric bloom: rays + lens rings + fine sparkle ────────────────
+    const bloomUniforms = {
+      uTime: { value: 0 },
+      uLevel: { value: 0 },
+      uEnergy: { value: 0 },
+      uOpacity: { value: 1 },
+      uColor: { value: new THREE.Color(ACCENTS.cyan.ring) },
+    };
+    const bloomGeometry = new THREE.PlaneGeometry(7.6, 7.6);
+    const bloomMaterial = new THREE.ShaderMaterial({
+      uniforms: bloomUniforms,
+      vertexShader: BASIC_VERTEX,
+      fragmentShader: BLOOM_FRAGMENT,
+      transparent: true,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const bloom = new THREE.Mesh(bloomGeometry, bloomMaterial);
+    bloom.position.z = -0.72;
+    scene.add(bloom);
+
+    // ── Sweep arcs: short bright sectors that orbit the core ──────────────
+    const sweepDefs = [
+      { radius: 1.04, arc: Math.PI * 0.55, tilt: 0.96, roll: 0.4, speed: 0.85, opacity: 0.55 },
+      { radius: 1.22, arc: Math.PI * 0.38, tilt: -0.62, roll: -0.9, speed: -0.62, opacity: 0.45 },
+      { radius: 1.46, arc: Math.PI * 0.24, tilt: 1.34, roll: 1.7, speed: 0.4, opacity: 0.32 },
+    ];
+    const sweepMeshes = sweepDefs.map((def) => {
+      const geometry = new THREE.TorusGeometry(def.radius, 0.004, 3, 128, def.arc);
+      const material = new THREE.MeshBasicMaterial({
+        color: ACCENTS.cyan.core,
+        transparent: true,
+        opacity: def.opacity,
+        depthWrite: false,
+        blending: THREE.AdditiveBlending,
+      });
+      const mesh = new THREE.Mesh(geometry, material);
+      mesh.rotation.set(def.tilt, 0, def.roll);
+      scene.add(mesh);
+      return { mesh, material, def };
+    });
 
     // ── Core sphere with live displacement/normal glow ────────────────────
     const coreUniforms = {
@@ -308,6 +376,30 @@ export default function JarvisCore({
     particleHolder.add(particles);
     scene.add(particleHolder);
 
+    // ── Distant dust: depth without extra draw calls per particle ─────────
+    const starCount = 240;
+    const starPositions = new Float32Array(starCount * 3);
+    for (let i = 0; i < starCount; i++) {
+      const radius = 2.4 + Math.random() * 2.4;
+      const theta = Math.random() * Math.PI * 2;
+      const phi = Math.acos(2 * Math.random() - 1);
+      starPositions[i * 3] = radius * Math.sin(phi) * Math.cos(theta);
+      starPositions[i * 3 + 1] = radius * Math.cos(phi);
+      starPositions[i * 3 + 2] = radius * Math.sin(phi) * Math.sin(theta);
+    }
+    const starGeometry = new THREE.BufferGeometry();
+    starGeometry.setAttribute("position", new THREE.BufferAttribute(starPositions, 3));
+    const starMaterial = new THREE.PointsMaterial({
+      color: 0xbfe9ff,
+      size: 0.014,
+      transparent: true,
+      opacity: 0.4,
+      depthWrite: false,
+      blending: THREE.AdditiveBlending,
+    });
+    const starField = new THREE.Points(starGeometry, starMaterial);
+    scene.add(starField);
+
     // ── Render loop ───────────────────────────────────────────────────────
     const clock = new THREE.Clock();
     let raf = 0;
@@ -371,6 +463,12 @@ export default function JarvisCore({
       segmentUniforms.uEnergy.value = isOffline ? 0 : energy;
       segmentUniforms.uOpacity.value = opacity;
 
+      bloomUniforms.uTime.value = elapsed;
+      bloomUniforms.uLevel.value = level;
+      bloomUniforms.uEnergy.value = isOffline ? 0 : energy;
+      bloomUniforms.uOpacity.value = opacity;
+      bloomUniforms.uColor.value.copy(colorRing);
+
       particleMaterial.color.copy(colorParticle);
       particleMaterial.opacity = (0.4 + level * 0.4 + energy * 0.2) * opacity;
       particleGeometry.setDrawRange(
@@ -386,11 +484,21 @@ export default function JarvisCore({
         mesh.rotation.z += dt * def.speed * baseSpeed;
         mesh.rotation.x += dt * 0.035 * baseSpeed;
       }
+
+      for (const sweep of sweepMeshes) {
+        sweep.mesh.rotation.z += dt * sweep.def.speed * baseSpeed;
+        sweep.material.color.copy(colorRing);
+        sweep.material.opacity = sweep.def.opacity * (0.5 + energy * 0.55 + level * 0.35) * opacity;
+      }
+      starField.rotation.y -= dt * 0.018 * motion;
+      starField.rotation.z += dt * 0.006 * motion;
+      starMaterial.opacity = (0.26 + energy * 0.22) * opacity;
       core.rotation.y += dt * 0.16 * baseSpeed;
       core.rotation.x = Math.sin(elapsed * 0.24) * 0.09;
       wire.rotation.copy(core.rotation);
       wire.scale.setScalar(1 + level * 0.03);
-      core.scale.setScalar(1 + level * 0.055 + energy * 0.02);
+      // A slow heartbeat keeps idle alive without moving the layout.
+      core.scale.setScalar(1 + level * 0.055 + energy * 0.02 + Math.sin(elapsed * 1.15) * 0.008);
 
       particleHolder.rotation.y += dt * 0.075 * baseSpeed;
       particleHolder.rotation.x = Math.sin(elapsed * 0.14) * 0.16;

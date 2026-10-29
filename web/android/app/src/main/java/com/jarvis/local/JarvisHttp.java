@@ -1,5 +1,7 @@
 package com.jarvis.local;
 
+import android.util.Base64;
+
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
@@ -105,6 +107,54 @@ public final class JarvisHttp {
             }
         });
         return id;
+    }
+
+    /**
+     * Binary response support for speech APIs. Returns base64 only for audio
+     * content types; JSON errors come back as text so the JS layer can show
+     * the provider's real message.
+     */
+    public static JSONObject requestBase64(
+            String url,
+            String method,
+            JSONObject headers,
+            String body,
+            int timeoutMs,
+            boolean allowInsecure) throws Exception {
+        validate(url, allowInsecure);
+        HttpURLConnection connection = open(url, method, headers, body, timeoutMs);
+        try {
+            int status = connection.getResponseCode();
+            InputStream stream = status >= 400 ? connection.getErrorStream() : connection.getInputStream();
+            String mime = connection.getContentType();
+            byte[] bytes = readBytes(stream, 8 * 1024 * 1024);
+            JSONObject out = new JSONObject();
+            out.put("status", status);
+            out.put("mime", mime == null ? "" : mime);
+            if (mime != null && mime.toLowerCase().startsWith("audio/")) {
+                out.put("base64", Base64.encodeToString(bytes, Base64.NO_WRAP));
+            } else {
+                out.put("body", new String(bytes, StandardCharsets.UTF_8));
+            }
+            return out;
+        } finally {
+            connection.disconnect();
+        }
+    }
+
+    private static byte[] readBytes(InputStream stream, int limit) throws Exception {
+        if (stream == null) return new byte[0];
+        ByteArrayOutputStream out = new ByteArrayOutputStream();
+        byte[] buffer = new byte[8192];
+        int read;
+        int total = 0;
+        while ((read = stream.read(buffer)) > 0) {
+            total += read;
+            if (total > limit) break;
+            out.write(buffer, 0, read);
+        }
+        stream.close();
+        return out.toByteArray();
     }
 
     public static void abort(String id) {

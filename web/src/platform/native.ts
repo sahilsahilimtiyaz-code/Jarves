@@ -318,6 +318,23 @@ export function httpAbort(input: { streamId: string }): Promise<void> {
   return call("httpAbort", input);
 }
 
+/** Binary/audio request: returns base64 for audio content types. */
+export function httpRequestBase64(input: {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body?: string;
+  timeoutMs?: number;
+  allowInsecure?: boolean;
+}): Promise<{ status: number; base64?: string; mime?: string; body?: string }> {
+  return call("httpRequestBase64", input);
+}
+
+/** Open this app's Android permission page (permanent denials). */
+export function openAppSettings(): Promise<{ ok: boolean; message?: string }> {
+  return call("openAppSettings");
+}
+
 // ── Wake word (foreground microphone service) ─────────────────────────────
 
 export interface WakeStatus {

@@ -160,3 +160,22 @@ EVOLUTION_AUDIT.md.
   web bundle present: 1 entry.
 - Still unverified: provider network calls, Keystore encryption, SQLite on a
   real device, voice, and every hardware interaction. Those need the phone.
+
+## Premium UI, cloud voice and permissions pass
+
+- Cloud TTS: 8 providers + custom (ElevenLabs, Fish Audio, OpenAI Speech,
+  Google Cloud TTS, Deepgram Aura, Azure Speech, PlayHT, Cartesia) with a pure
+  request/response layer (`ttsProtocols.ts`) and a native binary HTTP bridge.
+  Keys stay in Android Keystore; playback drives a WebAudio analyser so the core
+  reacts to the real voice amplitude.
+- Tests: **78/78 pass** (`npm test`), including 11 new cloud-voice protocol
+  tests (URLs, auth headers, SSML escaping, Google base64 JSON, error text).
+- `npx tsc --noEmit` clean; `npm run build` succeeds.
+- UI: premium glass/aurora layer added on top of the existing mobile CSS, plus a
+  richer WebGL core (volumetric bloom shader, three orbiting sweep arcs, distant
+  dust field, idle heartbeat).
+- Permissions: one-tap request for microphone/camera/notifications, SAF file
+  picker, and a deep link to the system app-permission screen. Device-control
+  limits are stated in the UI.
+- Not verified on hardware: cloud voice playback, Keystore decryption, GPU cost
+  on a Galaxy A54. Those require the device.
