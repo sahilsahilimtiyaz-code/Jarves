@@ -12,9 +12,12 @@ interface PrefsState {
   animationMode: AnimationMode;
   micLanguage: string;
   accent: Accent;
+  /** Persistent "Hey JARVIS" monitoring — restored on every launch. */
+  wakeWordEnabled: boolean;
   setAnimationMode: (m: AnimationMode) => void;
   setMicLanguage: (lang: string) => void;
   setAccent: (a: Accent) => void;
+  setWakeWordEnabled: (enabled: boolean) => void;
 }
 
 export const usePrefs = create<PrefsState>()(
@@ -23,9 +26,11 @@ export const usePrefs = create<PrefsState>()(
       animationMode: "auto",
       micLanguage: "en-US",
       accent: "cyan",
+      wakeWordEnabled: false,
       setAnimationMode: (animationMode) => set({ animationMode }),
       setMicLanguage: (micLanguage) => set({ micLanguage }),
       setAccent: (accent) => set({ accent }),
+      setWakeWordEnabled: (wakeWordEnabled) => set({ wakeWordEnabled }),
     }),
     {
       name: "jarvis.prefs.v1",

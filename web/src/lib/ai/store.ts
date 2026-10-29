@@ -389,9 +389,12 @@ export class MemoryStore {
   }
 
   async setSetting(key: string, value: unknown): Promise<void> {
+    // INSERT OR REPLACE, not `ON CONFLICT … DO UPDATE`: the upsert syntax needs
+    // SQLite 3.24 (Android 10 / API 29) while this app supports API 23. On
+    // Android 8/9 the old statement threw a syntax error, which is exactly why
+    // a saved provider never reappeared and the form could sit on "Saving…".
     await this.db.exec(
-      `INSERT INTO settings (key, value, updated_at) VALUES (?, ?, ?)
-       ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at`,
+      "INSERT OR REPLACE INTO settings (key, value, updated_at) VALUES (?, ?, ?)",
       [key, JSON.stringify(value), Date.now()],
     );
   }
@@ -401,18 +404,17 @@ export class MemoryStore {
   async ensureConversation(id: string, title = "Conversation"): Promise<void> {
     const now = Date.now();
     await this.db.exec(
-      `INSERT INTO conversations (id, title, started_at, updated_at, source)
-       VALUES (?, ?, ?, ?, 'android')
-       ON CONFLICT(id) DO UPDATE SET updated_at = excluded.updated_at`,
+      `INSERT OR IGNORE INTO conversations (id, title, started_at, updated_at, source)
+       VALUES (?, ?, ?, ?, 'android')`,
       [id, title, now, now],
     );
+    await this.db.exec("UPDATE conversations SET updated_at = ? WHERE id = ?", [now, id]);
   }
 
   async addMessage(message: MessageRecord): Promise<void> {
     await this.db.exec(
-      `INSERT INTO messages (id, conversation_id, role, text, ts, provider, model, tool_calls, status, attachments)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET text = excluded.text, status = excluded.status`,
+      `INSERT OR REPLACE INTO messages (id, conversation_id, role, text, ts, provider, model, tool_calls, status, attachments)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         message.id,
         message.conversation_id,
@@ -644,15 +646,11 @@ export class MemoryStore {
       created_at: previous[0]?.created_at ?? now,
       updated_at: now,
     };
+    // `procedures.name` is UNIQUE, so REPLACE updates the existing row. The id
+    // is reused above when a row with this name already exists.
     await this.db.exec(
-      `INSERT INTO procedures (id, name, purpose, prerequisites, permissions, steps, expected, failures, verification, status, version, parent_version, created_at, updated_at, test_result)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(name) DO UPDATE SET
-         purpose = excluded.purpose, prerequisites = excluded.prerequisites, permissions = excluded.permissions,
-         steps = excluded.steps, expected = excluded.expected, failures = excluded.failures,
-         verification = excluded.verification, status = excluded.status, version = excluded.version,
-         parent_version = excluded.parent_version, updated_at = excluded.updated_at,
-         test_result = excluded.test_result`,
+      `INSERT OR REPLACE INTO procedures (id, name, purpose, prerequisites, permissions, steps, expected, failures, verification, status, version, parent_version, created_at, updated_at, test_result)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         record.id,
         record.name,

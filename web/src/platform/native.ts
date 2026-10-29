@@ -79,7 +79,7 @@ type NativeEventName = (typeof EVENTS)[number];
 
 const bus = new Map<string, Set<Handler>>();
 let pluginPromise: Promise<any | null> | null = null;
-let listenersAttached = false;
+let listenersPromise: Promise<void> | null = null;
 const handles: PluginListenerHandle[] = [];
 
 /**
@@ -104,20 +104,45 @@ export function nativePlugin(): Promise<any | null> {
 }
 
 let availableCache: Promise<boolean> | null = null;
+
+/**
+ * Probe the native bridge.
+ *
+ * A single failed `getCapabilities` used to be cached as `false` for the whole
+ * process. One transient bridge hiccup at cold start therefore disabled every
+ * native feature permanently: no provider storage, "engine: none", an unknown
+ * mic permission and no phone actions until the app was force-stopped. Now a
+ * failure is retried with backoff and is never cached, so the next call can
+ * recover. A successful probe is cached because it is the expensive one.
+ */
 export function nativeAvailable(): Promise<boolean> {
   if (!availableCache) {
     availableCache = (async () => {
-      const p = await nativePlugin();
-      if (!p) return false;
-      try {
-        const res = await p.getCapabilities();
-        return Boolean(res?.native);
-      } catch {
-        return false;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        const p = await nativePlugin();
+        if (!p) return false;
+        try {
+          // Make sure event delivery exists before any stream or wake event can
+          // be emitted. Safe to await repeatedly; the promise is memoised.
+          await attachListeners(p);
+          const res = await withTimeout<{ native?: boolean }>(p.getCapabilities(), "getCapabilities", 12_000);
+          if (res?.native) return true;
+        } catch {
+          /* bridge not ready yet — retry below */
+        }
+        if (attempt < 2) await new Promise((resolve) => setTimeout(resolve, 200 * (attempt + 1)));
       }
+      // Do not memoise a failure: the caller may retry after the WebView settles.
+      availableCache = null;
+      return false;
     })();
   }
   return availableCache;
+}
+
+/** Forget a successful probe so the next call re-checks the bridge. */
+export function resetNativeAvailability(): void {
+  availableCache = null;
 }
 
 /** Subscribe to a native event. Returns an unsubscribe function. */
@@ -136,28 +161,48 @@ export function onNative(name: NativeEventName, fn: Handler): () => void {
   };
 }
 
-async function attachListeners(plugin: any): Promise<void> {
-  if (listenersAttached) return;
-  listenersAttached = true;
-  for (const name of EVENTS) {
-    try {
-      const handle = await plugin.addListener(name, (data: any) => {
-        const set = bus.get(name);
-        if (!set) return;
-        for (const fn of set) {
-          try {
-            fn(data);
-          } catch (e) {
-            console.warn("[native] listener threw", name, e);
-          }
+/**
+ * Register every native event listener exactly once.
+ *
+ * This is awaited by the bridge probe: streaming responses emit `httpChunk`
+ * immediately after the HTTP thread starts, and listeners used to be attached
+ * only when the first `onNative()` call happened — one round trip per event.
+ * Chunks that arrived during those round trips were silently lost, which made
+ * long provider answers look empty or truncated.
+ */
+function attachListeners(plugin: any): Promise<void> {
+  if (listenersPromise) return listenersPromise;
+  listenersPromise = (async () => {
+    const results = await Promise.all(
+      EVENTS.map(async (name) => {
+        try {
+          const handle = await withTimeout<PluginListenerHandle>(
+            plugin.addListener(name, (data: any) => {
+              const set = bus.get(name);
+              if (!set) return;
+              for (const fn of set) {
+                try {
+                  fn(data);
+                } catch (e) {
+                  console.warn("[native] listener threw", name, e);
+                }
+              }
+            }),
+            `addListener:${name}`,
+            4_000,
+          );
+          if (handle) handles.push(handle);
+          return true;
+        } catch {
+          // A bridge that is not ready yet must not permanently disable event
+          // delivery; a later probe retries the whole attachment.
+          return false;
         }
-      });
-      if (handle) handles.push(handle);
-    } catch {
-      // Older shells may not declare every event; subscription is best-effort
-      // and the caller still receives the promise rejection from the method.
-    }
-  }
+      }),
+    );
+    if (results.some((ok) => !ok)) listenersPromise = null;
+  })();
+  return listenersPromise;
 }
 
 // ── Typed call helpers ─────────────────────────────────────────────────────
@@ -191,6 +236,11 @@ const CALL_TIMEOUTS: Record<string, number> = {
   getVoices: 15_000,
   listApps: 20_000,
   openApp: 20_000,
+  wakeStart: 25_000,
+  wakeStop: 15_000,
+  wakePause: 15_000,
+  wakeResume: 25_000,
+  wakeStatus: 12_000,
 };
 
 /** Resolve `promise` or reject with a bridge-specific message after `ms`. */
@@ -304,8 +354,16 @@ export function stopSpeaking(): Promise<void> {
   return call("stopSpeaking");
 }
 
-export function getVoices(): Promise<{ voices: string[]; language?: string }> {
-  return call("getVoices");
+export async function getVoices(): Promise<{ voices: string[]; language?: string; ready?: boolean }> {
+  const raw = await call<{ voices?: unknown; language?: string; ready?: boolean }>("getVoices");
+  // Capacitor serialises a Java JSArray as an array-like object; normalise it
+  // for every consumer instead of letting `Array.isArray` silently drop it.
+  const voices = Array.isArray(raw?.voices)
+    ? (raw.voices as string[])
+    : raw?.voices && typeof raw.voices === "object"
+      ? Object.values(raw.voices as Record<string, string>).filter((value) => typeof value === "string")
+      : [];
+  return { voices, language: raw?.language, ready: raw?.ready };
 }
 
 export function getDeviceInfo(): Promise<NativeDeviceInfo> {
@@ -443,8 +501,8 @@ export function wakeStatus(): Promise<WakeStatus> {
   return call("wakeStatus");
 }
 
-export function wakeStart(): Promise<WakeStatus> {
-  return call("wakeStart");
+export function wakeStart(phrase?: string, language?: string): Promise<WakeStatus> {
+  return call("wakeStart", { phrase: phrase || "hey jarvis", language: language || "en-US" });
 }
 
 export function wakeStop(): Promise<WakeStatus> {
@@ -467,7 +525,7 @@ export function wakeDownloadModel(): Promise<{ ok: boolean; message: string }> {
 export function __resetNativeForTests(): void {
   pluginPromise = null;
   availableCache = null;
-  listenersAttached = false;
+  listenersPromise = null;
   handles.length = 0;
   bus.clear();
 }

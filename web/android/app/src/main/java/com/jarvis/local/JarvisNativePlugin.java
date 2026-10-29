@@ -7,6 +7,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.PendingIntent;
+import android.content.BroadcastReceiver;
 import android.content.ClipData;
 import android.content.ClipboardManager;
 import android.content.Context;
@@ -35,6 +36,7 @@ import android.util.Base64;
 import android.util.Log;
 
 import androidx.activity.result.ActivityResult;
+import androidx.core.content.ContextCompat;
 import androidx.core.content.FileProvider;
 
 import com.getcapacitor.JSArray;
@@ -110,14 +112,49 @@ public class JarvisNativePlugin extends Plugin {
 
     // ── Lifecycle ──────────────────────────────────────────────────────────
 
+    /** Receives state/wake broadcasts from the microphone foreground service. */
+    private final BroadcastReceiver wakeReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            if (intent == null) return;
+            if ("wake".equals(intent.getStringExtra("type"))) {
+                JSObject data = new JSObject();
+                data.put("text", intent.getStringExtra("text"));
+                data.put("phrase", intent.getStringExtra("phrase"));
+                data.put("at", intent.getLongExtra("at", System.currentTimeMillis()));
+                notifyListeners("wakeWord", data);
+            } else {
+                JSObject data = new JSObject();
+                data.put("state", intent.getStringExtra("state"));
+                data.put("message", intent.getStringExtra("message"));
+                notifyListeners("wakeState", data);
+            }
+        }
+    };
+
     @Override
     public void load() {
         initTts();
         ensureChannel();
+        try {
+            IntentFilter filter = new IntentFilter(JarvisWakeService.ACTION_WAKE_EVENT);
+            ContextCompat.registerReceiver(
+                getContext(),
+                wakeReceiver,
+                filter,
+                ContextCompat.RECEIVER_NOT_EXPORTED
+            );
+        } catch (Exception e) {
+            Log.w(TAG, "wake receiver could not be registered", e);
+        }
     }
 
     @Override
     protected void handleOnDestroy() {
+        try {
+            getContext().unregisterReceiver(wakeReceiver);
+        } catch (Exception ignored) {
+        }
         destroyRecognizer();
         if (tts != null) {
             try {
@@ -1344,22 +1381,34 @@ public class JarvisNativePlugin extends Plugin {
                 timeout,
                 allowInsecure,
                 chunk -> {
-                    JSObject data = new JSObject();
-                    data.put("streamId", streamId);
-                    data.put("chunk", chunk);
-                    notifyListeners("httpChunk", data);
+                    // The HTTP client runs on a worker thread; Capacitor's
+                    // notifyListeners touches the WebView, which must happen on
+                    // the main thread.
+                    final String chunkText = chunk;
+                    main.post(() -> {
+                        JSObject data = new JSObject();
+                        data.put("streamId", streamId);
+                        data.put("chunk", chunkText);
+                        notifyListeners("httpChunk", data);
+                    });
                 },
                 status -> {
-                    JSObject data = new JSObject();
-                    data.put("streamId", streamId);
-                    data.put("status", status);
-                    notifyListeners("httpDone", data);
+                    final int httpStatus = status;
+                    main.post(() -> {
+                        JSObject data = new JSObject();
+                        data.put("streamId", streamId);
+                        data.put("status", httpStatus);
+                        notifyListeners("httpDone", data);
+                    });
                 },
                 error -> {
-                    JSObject data = new JSObject();
-                    data.put("streamId", streamId);
-                    data.put("message", error);
-                    notifyListeners("httpError", data);
+                    final String detail = error;
+                    main.post(() -> {
+                        JSObject data = new JSObject();
+                        data.put("streamId", streamId);
+                        data.put("message", detail);
+                        notifyListeners("httpError", data);
+                    });
                 });
             JSObject out = new JSObject();
             out.put("streamId", streamId);
@@ -1376,49 +1425,122 @@ public class JarvisNativePlugin extends Plugin {
         call.resolve();
     }
 
-    // ── Always-listening wake word ─────────────────────────────────────────
-    // The foreground microphone service is NOT part of this build. These
-    // methods report that honestly instead of pretending to listen: the UI
-    // renders "unavailable" and never shows a fake listening indicator.
+    // ── "Hey JARVIS" monitoring (microphone foreground service) ─────────────
+    // Real work happens in JarvisWakeService: the device's own SpeechRecognizer
+    // runs behind a permanent notification and broadcasts when it hears the
+    // phrase. The plugin only translates that into Capacitor events.
 
-    private JSObject wakeUnavailable() {
+    private JSObject wakeStatusObject() {
         JSObject out = new JSObject();
-        out.put("state", "off");
-        out.put("modelReady", false);
-        out.put("message", "Always-listening wake word is not implemented in this build. Tap-to-talk works.");
+        out.put("state", JarvisWakeService.state());
+        out.put("modelReady", SpeechRecognizer.isRecognitionAvailable(getContext()));
+        out.put("message", JarvisWakeService.message());
+        out.put("engine", "android-speech-recognizer");
+        return out;
+    }
+
+    private JSObject wakeError(String detail) {
+        JSObject out = wakeStatusObject();
+        out.put("state", "error");
+        out.put("message", detail);
         return out;
     }
 
     @PluginMethod
     public void wakeStatus(PluginCall call) {
-        call.resolve(wakeUnavailable());
+        call.resolve(wakeStatusObject());
     }
 
     @PluginMethod
     public void wakeStart(PluginCall call) {
-        call.resolve(wakeUnavailable());
+        if (getPermissionState("microphone") != PermissionState.GRANTED) {
+            call.resolve(wakeError("Microphone permission is required before wake-word monitoring can start."));
+            return;
+        }
+        if (!SpeechRecognizer.isRecognitionAvailable(getContext())) {
+            JSObject out = wakeStatusObject();
+            out.put("state", "model-missing");
+            out.put(
+                "message",
+                "This phone has no Android speech-recognition service, so “Hey JARVIS” cannot be detected. Install/enable the Google speech service or use tap-to-talk."
+            );
+            call.resolve(out);
+            return;
+        }
+        Intent intent = new Intent(getContext(), JarvisWakeService.class);
+        intent.setAction(JarvisWakeService.ACTION_START);
+        intent.putExtra(JarvisWakeService.EXTRA_PHRASE, call.getString("phrase", "hey jarvis"));
+        intent.putExtra(JarvisWakeService.EXTRA_LANGUAGE, call.getString("language", "en-US"));
+        try {
+            ContextCompat.startForegroundService(getContext(), intent);
+            JSObject out = wakeStatusObject();
+            if ("off".equals(out.getString("state"))) out.put("state", "starting");
+            call.resolve(out);
+        } catch (Exception e) {
+            call.resolve(wakeError("Android refused to start the microphone service: " + safeMessage(e)));
+        }
     }
 
     @PluginMethod
     public void wakeStop(PluginCall call) {
-        call.resolve(wakeUnavailable());
+        try {
+            getContext().stopService(new Intent(getContext(), JarvisWakeService.class));
+        } catch (Exception ignored) {
+        }
+        JSObject out = wakeStatusObject();
+        out.put("state", "off");
+        out.put("message", "Wake-word monitoring is off.");
+        call.resolve(out);
     }
 
     @PluginMethod
     public void wakePause(PluginCall call) {
-        call.resolve(wakeUnavailable());
+        if (!JarvisWakeService.isMonitoring()) {
+            call.resolve(wakeStatusObject());
+            return;
+        }
+        Intent intent = new Intent(getContext(), JarvisWakeService.class);
+        intent.setAction(JarvisWakeService.ACTION_PAUSE);
+        try {
+            getContext().startService(intent);
+        } catch (Exception e) {
+            Log.w(TAG, "wake pause failed", e);
+        }
+        call.resolve(wakeStatusObject());
     }
 
     @PluginMethod
     public void wakeResume(PluginCall call) {
-        call.resolve(wakeUnavailable());
+        String state = JarvisWakeService.state();
+        try {
+            if ("off".equals(state) || "error".equals(state) || "model-missing".equals(state)) {
+                Intent intent = new Intent(getContext(), JarvisWakeService.class);
+                intent.setAction(JarvisWakeService.ACTION_START);
+                ContextCompat.startForegroundService(getContext(), intent);
+            } else {
+                Intent intent = new Intent(getContext(), JarvisWakeService.class);
+                intent.setAction(JarvisWakeService.ACTION_RESUME);
+                getContext().startService(intent);
+            }
+        } catch (Exception e) {
+            call.resolve(wakeError("Wake-word monitoring could not resume: " + safeMessage(e)));
+            return;
+        }
+        JSObject out = wakeStatusObject();
+        if ("paused".equals(out.getString("state")) || "wake".equals(out.getString("state"))) {
+            out.put("state", "starting");
+        }
+        call.resolve(out);
     }
 
     @PluginMethod
     public void wakeDownloadModel(PluginCall call) {
         JSObject out = new JSObject();
         out.put("ok", false);
-        out.put("message", "No wake-word model is bundled with this build.");
+        out.put(
+            "message",
+            "There is no bundled wake-word model: this build uses the phone's installed speech-recognition service. Configure that service instead."
+        );
         call.resolve(out);
     }
 

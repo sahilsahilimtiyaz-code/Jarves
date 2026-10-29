@@ -37,9 +37,14 @@ let instance: JarvisAI | null = null;
 let migration: Promise<void> | null = null;
 let nativeChecked: Promise<boolean> | null = null;
 
-export function nativeBackend(): Promise<boolean> {
+export async function nativeBackend(): Promise<boolean> {
   if (!nativeChecked) nativeChecked = native.nativeAvailable().catch(() => false);
-  return nativeChecked;
+  const available = await nativeChecked;
+  // A failed probe must not be memoised: the WebView can settle after the
+  // first render, and the previous permanent `false` made every retry fail
+  // until the app was restarted.
+  if (!available) nativeChecked = null;
+  return available;
 }
 
 export function getJarvisAI(): JarvisAI {
@@ -70,6 +75,9 @@ export async function initMind(): Promise<void> {
 
 export function resetNativeCheck(): void {
   nativeChecked = null;
+  // The bridge probe in platform/native is cached separately; clear both so a
+  // recovered WebView can use SQLite and providers without a restart.
+  native.resetNativeAvailability();
 }
 
 /**

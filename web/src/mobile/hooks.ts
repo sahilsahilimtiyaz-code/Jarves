@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import { getHealth } from "../lib/api";
 import { backendConfigured, backendBase, subscribeBackend } from "../lib/backend";
 import { voicePipeline, type VoiceSnapshot } from "../lib/voicePipeline";
+import { wakeWordService, type WakeSnapshot } from "../lib/wakeWordService";
 import { getJarvisAI, initMind } from "../lib/ai/runtime";
 import type { ProviderConfig } from "../lib/ai/types";
 import { detectPlatform } from "../platform";
@@ -57,6 +58,16 @@ export function useVoiceStatus(): VoiceStatus {
   }, []);
 
   return status;
+}
+
+/** Real wake-word service state, kept in sync with native broadcasts. */
+export function useWakeWordStatus(): WakeSnapshot {
+  const [snap, setSnap] = useState<WakeSnapshot>(() => wakeWordService.getSnapshot());
+  useEffect(() => {
+    void wakeWordService.init();
+    return wakeWordService.subscribe(setSnap);
+  }, []);
+  return snap;
 }
 
 export type BackendStatus = "unconfigured" | "checking" | "online" | "offline";

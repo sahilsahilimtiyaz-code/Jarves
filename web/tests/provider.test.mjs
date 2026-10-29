@@ -142,6 +142,48 @@ test("updating a provider keeps its id and replaces the model", async () => {
   assert.equal(list[0].model, "openai/gpt-4o-mini");
 });
 
+test("editing a provider with a blank key keeps the stored key", async () => {
+  const { gateway } = await freshGateway(makePort());
+  const key = "sk-or-v1-abcdefghijklmnopqrstuvwxyz";
+  const saved = await gateway.upsert({ provider: "openrouter", model: "openai/gpt-4o-mini", apiKey: key });
+  const updated = await gateway.upsert({ id: saved.id, provider: "openrouter", model: "google/gemini-2.0-flash-001", apiKey: "" });
+  assert.equal(updated.id, saved.id);
+  assert.equal(updated.model, "google/gemini-2.0-flash-001");
+  assert.equal(await gateway.hasKey(saved.id), true, "a blank edit field must not delete the saved key");
+});
+
+/**
+ * Android 8/9 ship SQLite 3.22, which rejects `ON CONFLICT … DO UPDATE`.
+ * Reproduce that parser so the store can never silently regress to upsert
+ * syntax and make provider saves fail on those phones again.
+ */
+function makeLegacySqlitePort() {
+  const port = makePort();
+  const exec = port.exec.bind(port);
+  port.exec = async (sql, params = []) => {
+    if (/\bon\s+conflict\b/i.test(sql)) {
+      throw new Error('near "ON": syntax error (legacy SQLite has no UPSERT)');
+    }
+    return exec(sql, params);
+  };
+  return port;
+}
+
+test("provider settings persist on the legacy SQLite shipped by Android 8/9", async () => {
+  const port = makeLegacySqlitePort();
+  const first = await freshGateway(port);
+  const saved = await first.gateway.upsert({
+    provider: "openrouter",
+    model: "openai/gpt-4o-mini",
+    apiKey: "sk-or-v1-abcdefghijklmnopqrstuvwxyz",
+  });
+  const restarted = await freshGateway(port);
+  const list = await restarted.gateway.load(true);
+  assert.equal(list.length, 1);
+  assert.equal(list[0].id, saved.id);
+  assert.equal(list[0].model, "openai/gpt-4o-mini");
+});
+
 test("permission states are normalised from Capacitor's enum casing", () => {
   const { normalizePermissionState } = nativeModule;
   assert.equal(normalizePermissionState("GRANTED"), "granted");

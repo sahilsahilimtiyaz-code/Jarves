@@ -11,6 +11,7 @@ import { planPhoneAction, type PhoneAction } from "../lib/actionPlan";
 import { executePhoneAction, type ActionOutcome } from "../lib/actions";
 import * as native from "../platform/native";
 import { getJarvisAI, initMind } from "../lib/ai/runtime";
+import { wakeWordService } from "../lib/wakeWordService";
 import { Sheet } from "./ui";
 import type { ScreenProps } from "./types";
 
@@ -39,6 +40,8 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [aiThinking, setAiThinking] = useState(false);
   const conversationId = useRef(SESSION_CONVERSATION_ID);
+  // True while a wake-word initiated command is waiting for its answer/TTS.
+  const wakeCommand = useRef(false);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -117,6 +120,10 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
       let providerConfigs: Awaited<ReturnType<ReturnType<typeof getJarvisAI>["gateway"]["load"]>> = [];
       let providerError: string | null = null;
       try {
+        // The schema must exist before the first read. Chat can be the first
+        // screen a resumed session shows, and querying a missing settings table
+        // used to report "No model configured" even with a saved provider.
+        await initMind();
         providerConfigs = await getJarvisAI().gateway.load(true);
       } catch (e) {
         providerError = e instanceof Error ? e.message : "Local provider storage is unavailable.";
@@ -138,6 +145,10 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
           });
           pushChat({ id: nextId(), role: "assistant", text: result.text, ts: Date.now() });
           if (voiceEnabled) void voicePipeline.speak(result.text);
+          // Without this the voice state stayed SUBMITTING_REQUEST after a
+          // voice-initiated turn with spoken replies disabled, so the chat
+          // surface reported "busy" forever and wake monitoring waited.
+          else voicePipeline.markIdle();
         } catch (e) {
           pushChat({
             id: nextId(),
@@ -145,6 +156,7 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
             text: e instanceof Error ? e.message : "The provider request failed.",
             ts: Date.now(),
           });
+          voicePipeline.markIdle();
         } finally {
           setAiThinking(false);
         }
@@ -192,6 +204,7 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
       ts: Date.now(),
     });
     if (outcome.ok && voiceEnabled) void voicePipeline.speak(outcome.message);
+    else voicePipeline.markIdle();
   };
 
   const approvePending = async () => {
@@ -201,6 +214,59 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
     const outcome = await executePhoneAction(action, true);
     reportOutcome(outcome);
   };
+
+  /**
+   * Restart “Hey JARVIS” monitoring only after speech playback ends, so the
+   * monitor never hears JARVIS's own answer and never stays silently paused.
+   */
+  const resumeWakeAfterReply = useCallback(() => {
+    if (!wakeCommand.current) return;
+    wakeCommand.current = false;
+    let done = false;
+    let unsubscribe: (() => void) | null = null;
+    const finish = () => {
+      if (done) return;
+      done = true;
+      unsubscribe?.();
+      void wakeWordService.resumeNow();
+    };
+    unsubscribe = voicePipeline.subscribe((snap) => {
+      if (snap.state === "SPEAKING" || snap.state === "THINKING" || snap.state === "SUBMITTING_REQUEST") return;
+      if (snap.state === "IDLE" || snap.state === "ERROR") {
+        window.setTimeout(finish, 350);
+      }
+    });
+    // Watchdog: a missing TTS callback must not leave the monitor paused.
+    window.setTimeout(finish, 30_000);
+  }, []);
+
+  const startWakeCommand = useCallback(async () => {
+    if (voice.state === "LISTENING") {
+      // A command session is already open; monitoring can stay paused and the
+      // watchdog will restore it, but resume explicitly so it is never stuck.
+      void wakeWordService.resumeNow();
+      return;
+    }
+    await wakeWordService.pauseForCommand();
+    const started = await voicePipeline.startListening({
+      language: micLanguage,
+      onPartial: (partial) => setText(partial),
+      onFinal: (final) => {
+        setText("");
+        wakeCommand.current = true;
+        void submit(final).finally(resumeWakeAfterReply);
+      },
+    });
+    if (!started.ok) {
+      setNotice(started.error ?? "Microphone could not start.");
+      await wakeWordService.resumeNow();
+    }
+  }, [voice.state, micLanguage, submit, resumeWakeAfterReply]);
+
+  useEffect(() => {
+    wakeWordService.setWakeHandler(() => void startWakeCommand());
+    return () => wakeWordService.setWakeHandler(null);
+  }, [startWakeCommand]);
 
   const toggleMic = async () => {
     if (voice.state === "LISTENING") {

@@ -317,13 +317,22 @@ export class AIGateway {
     const next = existing
       ? this.configs.map((candidate) => (candidate.id === config.id ? config : candidate))
       : [...this.configs, config];
+
+    // Store the credential FIRST. If the Keystore write fails, the provider is
+    // not persisted either, so a saved provider can never exist without the key
+    // it was saved with. Saving the config first used to leave exactly that
+    // half-state and every later request failed with "No API key is stored".
+    // An empty field on an existing provider means "keep the stored key"; the
+    // edit form promises exactly that. Removing a key is an explicit action
+    // (`clearKey`), so editing a model can never silently break the provider.
+    const newKey = (input.apiKey ?? "").trim();
+    if (newKey) await (await this.vault()).set(config.id, newKey);
     await this.save(next);
-    if (input.apiKey !== undefined) {
-      const key = input.apiKey.trim();
-      if (key) await (await this.vault()).set(config.id, key);
-      else await (await this.vault()).remove(config.id);
-    }
-    await this.store.logEvent("provider", `Provider ${existing ? "updated" : "added"}: ${config.label}`, config.model);
+    // The provider is already durable at this point; an audit-log failure must
+    // not turn a successful save into a scary error in the form.
+    await this.store
+      .logEvent("provider", `Provider ${existing ? "updated" : "added"}: ${config.label}`, config.model)
+      .catch(() => undefined);
     return config;
   }
 
@@ -411,32 +420,30 @@ export class AIGateway {
     let result: ConnectionTest;
     try {
       let models: { id: string; label: string }[] = [];
+      let discoveryNote = "";
       try {
         models = await this.discoverModels(id);
-        result = {
-          ok: true,
-          latencyMs: Date.now() - started,
-          models,
-          message:
-            models.length > 0
-              ? `Connected. ${models.length} models listed.`
-              : "Connected. The provider listed no models; enter a model ID manually.",
-        };
       } catch (discoveryError) {
-        // Some compatible endpoints expose no /models. Prove the key+model with
-        // a one-token request instead of pretending discovery worked.
-        const outcome = await this.attempt(config, {
-          messages: [{ role: "user", text: "ping" }],
-          maxTokens: 1,
-          temperature: 0,
-        });
-        result = {
-          ok: true,
-          latencyMs: Date.now() - started,
-          models: [],
-          message: `Model list unavailable (${discoveryError instanceof Error ? discoveryError.message : "unknown"}). A one-token request to ${outcome.result.model || config.model} succeeded.`,
-        };
+        // Some compatible endpoints expose no /models. That is not a failure by
+        // itself; the model request below is the real proof.
+        discoveryNote = `Model list unavailable (${discoveryError instanceof Error ? discoveryError.message : "unknown"}). `;
       }
+      // A model list only proves the key. Send a small request to the exact
+      // configured model too, so "Connected" can never come from a dropdown
+      // entry that the provider would actually reject.
+      const outcome = await this.attempt(config, {
+        messages: [{ role: "user", text: "ping" }],
+        maxTokens: 4,
+        temperature: 0,
+      });
+      result = {
+        ok: true,
+        latencyMs: Date.now() - started,
+        models,
+        message: `${discoveryNote}${config.model} answered in ${outcome.latencyMs} ms${
+          models.length > 0 ? `; ${models.length} models listed` : ""
+        }.`,
+      };
     } catch (e) {
       const message = e instanceof Error ? e.message : "The connection test failed.";
       result = { ok: false, latencyMs: Date.now() - started, message };

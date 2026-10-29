@@ -61,7 +61,10 @@ public final class JarvisSecureStore {
         byte[] iv = cipher.getIV();
         byte[] encrypted = cipher.doFinal((value == null ? "" : value).getBytes(StandardCharsets.UTF_8));
         String payload = Base64.encodeToString(iv, Base64.NO_WRAP) + ":" + Base64.encodeToString(encrypted, Base64.NO_WRAP);
-        prefs(context).edit().putString(name, payload).apply();
+        // commit(), not apply(): the provider form reports success only after
+        // the credential is actually on disk, so a kill right after Save cannot
+        // lose the key while the config row survives.
+        prefs(context).edit().putString(name, payload).commit();
     }
 
     /** Returns "" when absent or undecryptable (never throws a secret). */
@@ -82,7 +85,7 @@ public final class JarvisSecureStore {
     }
 
     public static synchronized void remove(Context context, String name) {
-        prefs(context).edit().remove(name).apply();
+        prefs(context).edit().remove(name).commit();
     }
 
     public static synchronized boolean has(Context context, String name) {

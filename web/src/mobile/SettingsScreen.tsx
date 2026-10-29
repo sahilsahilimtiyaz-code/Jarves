@@ -10,8 +10,9 @@ import { wsClient } from "../lib/ws";
 import { useStore } from "../lib/store";
 import { MIC_LANGUAGES, usePrefs } from "../lib/prefs";
 import { useLocalMemory } from "../lib/memoryStore";
-import { useBackendHealth, useVoiceStatus } from "./hooks";
+import { useBackendHealth, useProviderStatus, useVoiceStatus, useWakeWordStatus } from "./hooks";
 import { voicePipeline } from "../lib/voicePipeline";
+import { wakeWordService, wakeStateLabel } from "../lib/wakeWordService";
 import { voiceStateLabel } from "../lib/voiceState";
 import * as native from "../platform/native";
 import TtsPanel from "./TtsPanel";
@@ -26,6 +27,8 @@ const SPEECH_TEST = "Good evening, sir. All voice systems are online and at your
 export default function SettingsScreen({ onNavigate }: ScreenProps) {
   const health = useBackendHealth(30_000);
   const voice = useVoiceStatus();
+  const wake = useWakeWordStatus();
+  const provider = useProviderStatus();
   const connected = useStore((s) => s.connected);
   const voiceEnabled = useStore((s) => s.voiceEnabled);
   const setVoiceEnabled = useStore((s) => s.setVoiceEnabled);
@@ -53,6 +56,8 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
   const [micTest, setMicTest] = useState<string | null>(null);
   const [voiceTestState, setVoiceTestState] = useState<string | null>(null);
   const [permNotice, setPermNotice] = useState<string | null>(null);
+  const [wakeBusy, setWakeBusy] = useState(false);
+  const [wakeNotice, setWakeNotice] = useState<string | null>(null);
 
   const refreshNative = useCallback(async () => {
     const available = await native.nativeAvailable().catch(() => false);
@@ -153,6 +158,18 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
     setVoiceTestState(result.ok ? "Playback requested — listen for the voice." : result.error ?? "Speech failed.");
   };
 
+  const toggleWake = async (enabled: boolean) => {
+    setWakeBusy(true);
+    try {
+      const result = enabled ? await wakeWordService.enable() : await wakeWordService.disable();
+      setWakeNotice(result.message);
+      setPermState(enabled && result.ok ? "granted" : permState);
+      await refreshNative();
+    } finally {
+      setWakeBusy(false);
+    }
+  };
+
   const copyDiagnostics = async () => {
     const report = [
       "J.A.R.V.I.S. diagnostics",
@@ -207,6 +224,15 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
       <Section title="AI model (on this phone)">
         <Card>
           <Row
+            title="AI provider"
+            subtitle={provider.loading ? "Reading on-device settings…" : provider.error ? provider.error : provider.active ? `${provider.active.label} · ${provider.active.model}` : "No model configured"}
+            right={
+              <span className="m-chip" data-tone={provider.active ? "ok" : provider.error ? "danger" : "warn"}>
+                {provider.loading ? "checking" : provider.active ? "connected" : "unset"}
+              </span>
+            }
+          />
+          <Row
             title="Provider & model"
             subtitle="Answers directly from the device — no PC or backend required"
             right={
@@ -215,9 +241,20 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
               </button>
             }
           />
+          <Row
+            title="Local memory"
+            subtitle="SQLite on this phone · survives restarts"
+            right={<span className="m-chip" data-tone={provider.error ? "danger" : "ok"}>{provider.error ? "unavailable" : "available"}</span>}
+          />
+          <Row
+            title="Phone actions"
+            subtitle="Battery, settings, apps and clipboard run without a model or internet"
+            right={<span className="m-chip" data-tone="ok">local</span>}
+          />
           <p className="m-row-sub mt-2">
-            Keys are encrypted with the Android Keystore. If chat says “no model”, open Memory → Providers and use
-            “Test local storage” to see the exact database error.
+            The JARVIS backend below is optional and never required for chat or phone actions. Keys are encrypted with the
+            Android Keystore. If chat says “no model”, open Memory → Providers and use “Test local storage” to see the exact
+            database error.
           </p>
         </Card>
       </Section>
@@ -330,7 +367,10 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
             </button>
           </div>
           {voiceTestState && <p className="m-row-sub mt-2">{voiceTestState}</p>}
-          <p className="m-small mt-2">Voice state: {voiceStateLabel(voice.state)} · engine: {voice.engine}</p>
+          <p className="m-small mt-2">
+            Voice state: {voiceStateLabel(voice.state)} · engine: {voice.engine === "none" ? "unavailable" : voice.engine} · recognition:{" "}
+            {perms ? (perms.speechRecognition ? "available" : "missing") : "checking"}
+          </p>
           {voice.error && <p className="m-small mt-1" style={{ color: "#fecdd3" }}>{voice.error}</p>}
           {micTest !== null && (
             <div className="m-inset mt-2 p-3">
@@ -341,6 +381,33 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
           {voices.length > 0 && (
             <p className="m-row-sub mt-2">System voices: {voices.slice(0, 4).join(", ")}{voices.length > 4 ? ` +${voices.length - 4}` : ""}</p>
           )}
+        </Card>
+
+        <Card className="mt-3">
+          <Toggle
+            label="“Hey JARVIS” wake word"
+            hint="Runs a microphone foreground service with a permanent notification. Requires the phone's speech-recognition service; turn it off to release the microphone."
+            value={wake.enabled}
+            onChange={(enabled) => {
+              if (!wakeBusy) void toggleWake(enabled);
+            }}
+          />
+          <Row
+            title="Monitoring state"
+            subtitle={`${wakeStateLabel(wake.state)} · engine: ${wake.engine === "none" ? "unavailable" : wake.engine}`}
+            right={
+              <span className="m-chip" data-tone={wake.state === "monitoring" ? "ok" : wake.state === "error" || wake.state === "model-missing" ? "danger" : "warn"}>
+                {wakeBusy ? "working…" : wake.state}
+              </span>
+            }
+          />
+          <p className="m-small mt-2">
+            Recording starts only after monitoring is enabled and stops the moment it is disabled. Detection uses Android
+            SpeechRecognizer in partial transcripts; ambient audio is never uploaded by this app. Some devices send speech to
+            their system speech service, which may use the network.
+          </p>
+          {wake.message && <p className="m-row-sub mt-1">{wake.message}</p>}
+          {wakeNotice && <p className="m-row-sub mt-1">{wakeNotice}</p>}
         </Card>
 
         <TtsPanel />
@@ -557,7 +624,7 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
           <p className="m-small mt-2">
             A mobile-first front-end for the original JARVIS project, connected to your own backend. Voice, chat and phone actions report their real state; nothing is simulated.
           </p>
-          <div className="m-row-sub mt-2">App package: com.jarvis.local · version 0.6.0</div>
+          <div className="m-row-sub mt-2">App package: com.jarvis.local · version 0.7.1</div>
         </Card>
       </Section>
     </div>

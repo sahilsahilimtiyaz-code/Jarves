@@ -3,20 +3,18 @@
   J.A.R.V.I.S. — Android shell (Capacitor).
 
   Permission posture:
-   - INTERNET   : required to reach the user-configured JARVIS backend host
-                  (LAN or HTTPS). No other network privilege is used.
-   - RECORD_AUDIO + CAMERA : declared so the WebView may run the original
-                  browser voice pipeline (getUserMedia + MediaRecorder →
-                  backend /api/stt) and the local camera preview
-                  (WebcamFeed). Both are DANGEROUS-level runtime permissions:
-                  they are requested lazily from the UI (mic button /
-                  camera sheet) and remain denyable in system settings.
+   - INTERNET   : required to reach the configured AI provider (and the
+                  optional JARVIS backend host).
+   - RECORD_AUDIO + CAMERA : runtime permissions requested lazily from the UI.
+   - FOREGROUND_SERVICE + FOREGROUND_SERVICE_MICROPHONE : used ONLY by
+     JarvisWakeService while the owner has “Hey JARVIS” monitoring enabled.
+     The service shows a permanent notification, releases the microphone the
+     moment monitoring is disabled, and never records ambient audio to disk.
 
   There is deliberately no:
-   - Background microphone / foreground-service listening (wake-word runs
-     only while the app is foreground; documented limitation).
-   - AccessibilityService abuse. Android phone-control tooling is NOT
-     implemented; PC tools execute on the connected backend host only.
+   - AccessibilityService abuse or silent background recording.
+   - PC-side phone control: phone actions execute through documented Android
+     intents/sensors in JarvisNativePlugin.
 -->
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
@@ -72,6 +70,13 @@
 
         </activity>
 
+        <!-- “Hey JARVIS” monitor. Microphone work happens only here, always
+             behind the notification the service posts. -->
+        <service
+            android:name=".JarvisWakeService"
+            android:exported="false"
+            android:foregroundServiceType="microphone" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"
@@ -89,6 +94,9 @@
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.CAMERA" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- Wake-word monitoring is a microphone foreground service. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
 
     <!-- Microphone and camera are optional hardware: never filter the app out
          of Play/installation on devices that lack one of them. -->

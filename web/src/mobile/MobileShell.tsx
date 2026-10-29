@@ -10,7 +10,8 @@ import "./mobile.css";
 import { useStore } from "../lib/store";
 import { usePrefs } from "../lib/prefs";
 import { voicePipeline } from "../lib/voicePipeline";
-import { backendConfigured } from "../lib/backend";
+import { wakeWordService } from "../lib/wakeWordService";
+import { useProviderStatus } from "./hooks";
 import { detectPlatform } from "../platform";
 import HomeScreen from "./HomeScreen";
 import ChatScreen from "./ChatScreen";
@@ -32,11 +33,25 @@ export default function MobileShell() {
   const accent = usePrefs((s) => s.accent);
   const streaming = useStore((s) => s.chat.some((entry) => entry.streaming));
   const toolCount = useStore((s) => s.tools.length);
-  const needsBackend = detectPlatform() === "android" && !backendConfigured();
+  const provider = useProviderStatus();
+  // The optional JARVIS backend is not a setup requirement: only a missing
+  // on-device model is. Local phone actions and memory work either way.
+  const needsModel = detectPlatform() === "android" && !provider.loading && !provider.active;
 
   // Probe voice engines once; this only reads capabilities, it does not listen.
   useEffect(() => {
     void voicePipeline.detect();
+  }, []);
+
+  // Restore the owner's wake-word preference and route a detection to Chat.
+  useEffect(() => {
+    void wakeWordService.init();
+    let wasWake = wakeWordService.getSnapshot().state === "wake";
+    return wakeWordService.subscribe((snap) => {
+      const isWake = snap.state === "wake";
+      if (isWake && !wasWake) setTab("chat");
+      wasWake = isWake;
+    });
   }, []);
 
   // Android hardware back: return to Home first, then leave the app.
@@ -95,7 +110,7 @@ export default function MobileShell() {
             <span>{label}</span>
             {id === "chat" && streaming && <span className="m-nav-badge">…</span>}
             {id === "tools" && toolCount > 0 && <span className="m-nav-badge">{Math.min(toolCount, 99)}</span>}
-            {id === "settings" && needsBackend && <span className="m-nav-badge" style={{ background: "rgba(251,191,36,0.25)", borderColor: "rgba(251,191,36,0.5)" }}>!</span>}
+            {id === "settings" && needsModel && <span className="m-nav-badge" style={{ background: "rgba(251,191,36,0.25)", borderColor: "rgba(251,191,36,0.5)" }}>!</span>}
           </button>
         ))}
       </nav>
