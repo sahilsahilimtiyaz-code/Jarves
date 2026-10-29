@@ -48,6 +48,7 @@ import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 import com.getcapacitor.annotation.PermissionCallback;
 
+import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.ByteArrayOutputStream;
@@ -62,6 +63,7 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 
 /**
  * JarvisNative — the Android capability bridge.
@@ -103,6 +105,7 @@ public class JarvisNativePlugin extends Plugin {
     private String pendingCapturePath;
 
     private final Handler main = new Handler(Looper.getMainLooper());
+    private JarvisDb database;
 
     // ── Lifecycle ──────────────────────────────────────────────────────────
 
@@ -1177,6 +1180,215 @@ public class JarvisNativePlugin extends Plugin {
     }
 
     // ── Helpers ────────────────────────────────────────────────────────────
+
+    // ── Secure credential vault (Android Keystore) ─────────────────────────
+
+    @PluginMethod
+    public void secureSet(PluginCall call) {
+        String name = call.getString("name");
+        if (name == null || name.trim().isEmpty()) {
+            call.reject("A credential name is required.");
+            return;
+        }
+        try {
+            JarvisSecureStore.put(getContext(), name, call.getString("value", ""));
+            call.resolve();
+        } catch (Exception e) {
+            call.reject("Secure storage failed: " + safeMessage(e));
+        }
+    }
+
+    @PluginMethod
+    public void secureGet(PluginCall call) {
+        String name = call.getString("name");
+        if (name == null || name.trim().isEmpty()) {
+            call.reject("A credential name is required.");
+            return;
+        }
+        JSObject out = new JSObject();
+        out.put("value", JarvisSecureStore.get(getContext(), name));
+        call.resolve(out);
+    }
+
+    @PluginMethod
+    public void secureRemove(PluginCall call) {
+        String name = call.getString("name");
+        if (name != null && !name.trim().isEmpty()) {
+            JarvisSecureStore.remove(getContext(), name);
+        }
+        call.resolve();
+    }
+
+    // ── Local SQLite memory (schema owned by the TypeScript memory layer) ───
+
+    private JarvisDb db() {
+        if (database == null) database = new JarvisDb(getContext());
+        return database;
+    }
+
+    @PluginMethod
+    public void dbQuery(PluginCall call) {
+        String sql = call.getString("sql");
+        if (sql == null || sql.trim().isEmpty()) {
+            call.reject("SQL is required.");
+            return;
+        }
+        JSArray params = call.getArray("params", new JSArray());
+        try {
+            JSONArray rows = JarvisDb.query(db().getWritableDatabase(), sql, new JSONArray(params.toString()));
+            JSObject out = new JSObject();
+            out.put("rows", rows);
+            call.resolve(out);
+        } catch (Exception e) {
+            call.reject("Local memory read failed: " + safeMessage(e));
+        }
+    }
+
+    @PluginMethod
+    public void dbExec(PluginCall call) {
+        String sql = call.getString("sql");
+        if (sql == null || sql.trim().isEmpty()) {
+            call.reject("SQL is required.");
+            return;
+        }
+        JSArray params = call.getArray("params", new JSArray());
+        try {
+            JarvisDb.exec(db().getWritableDatabase(), sql, new JSONArray(params.toString()));
+            JSObject out = new JSObject();
+            out.put("changes", 0);
+            call.resolve(out);
+        } catch (Exception e) {
+            call.reject("Local memory write failed: " + safeMessage(e));
+        }
+    }
+
+    // ── Provider HTTP (native avoids provider CORS blocks) ──────────────────
+
+    @PluginMethod
+    public void httpRequest(final PluginCall call) {
+        final String url = call.getString("url");
+        if (url == null || url.isEmpty()) {
+            call.reject("A URL is required.");
+            return;
+        }
+        final String method = call.getString("method", "POST");
+        final String body = call.getString("body", "");
+        final int timeout = call.getInt("timeoutMs", 60000);
+        final boolean allowInsecure = Boolean.TRUE.equals(call.getBoolean("allowInsecure", false));
+        final JSObject headers = call.getObject("headers", new JSObject());
+        new Thread(() -> {
+            try {
+                JSONObject result = JarvisHttp.request(url, method, new JSONObject(headers.toString()), body, timeout, allowInsecure);
+                JSObject out = new JSObject();
+                out.put("status", result.optInt("status", 0));
+                out.put("body", result.optString("body", ""));
+                call.resolve(out);
+            } catch (Exception e) {
+                call.reject("Network request failed: " + safeMessage(e));
+            }
+        }).start();
+    }
+
+    @PluginMethod
+    public void httpStreamStart(final PluginCall call) {
+        final String url = call.getString("url");
+        if (url == null || url.isEmpty()) {
+            call.reject("A URL is required.");
+            return;
+        }
+        final String method = call.getString("method", "POST");
+        final String body = call.getString("body", "");
+        final int timeout = call.getInt("timeoutMs", 120000);
+        final boolean allowInsecure = Boolean.TRUE.equals(call.getBoolean("allowInsecure", false));
+        final JSObject headers = call.getObject("headers", new JSObject());
+        final String streamId = UUID.randomUUID().toString();
+        try {
+            JarvisHttp.startStream(
+                streamId,
+                url,
+                method,
+                new JSONObject(headers.toString()),
+                body,
+                timeout,
+                allowInsecure,
+                chunk -> {
+                    JSObject data = new JSObject();
+                    data.put("streamId", streamId);
+                    data.put("chunk", chunk);
+                    notifyListeners("httpChunk", data);
+                },
+                status -> {
+                    JSObject data = new JSObject();
+                    data.put("streamId", streamId);
+                    data.put("status", status);
+                    notifyListeners("httpDone", data);
+                },
+                error -> {
+                    JSObject data = new JSObject();
+                    data.put("streamId", streamId);
+                    data.put("message", error);
+                    notifyListeners("httpError", data);
+                });
+            JSObject out = new JSObject();
+            out.put("streamId", streamId);
+            call.resolve(out);
+        } catch (Exception e) {
+            call.reject("The streaming request could not start: " + safeMessage(e));
+        }
+    }
+
+    @PluginMethod
+    public void httpAbort(PluginCall call) {
+        String streamId = call.getString("streamId");
+        if (streamId != null && !streamId.isEmpty()) JarvisHttp.abort(streamId);
+        call.resolve();
+    }
+
+    // ── Always-listening wake word ─────────────────────────────────────────
+    // The foreground microphone service is NOT part of this build. These
+    // methods report that honestly instead of pretending to listen: the UI
+    // renders "unavailable" and never shows a fake listening indicator.
+
+    private JSObject wakeUnavailable() {
+        JSObject out = new JSObject();
+        out.put("state", "off");
+        out.put("modelReady", false);
+        out.put("message", "Always-listening wake word is not implemented in this build. Tap-to-talk works.");
+        return out;
+    }
+
+    @PluginMethod
+    public void wakeStatus(PluginCall call) {
+        call.resolve(wakeUnavailable());
+    }
+
+    @PluginMethod
+    public void wakeStart(PluginCall call) {
+        call.resolve(wakeUnavailable());
+    }
+
+    @PluginMethod
+    public void wakeStop(PluginCall call) {
+        call.resolve(wakeUnavailable());
+    }
+
+    @PluginMethod
+    public void wakePause(PluginCall call) {
+        call.resolve(wakeUnavailable());
+    }
+
+    @PluginMethod
+    public void wakeResume(PluginCall call) {
+        call.resolve(wakeUnavailable());
+    }
+
+    @PluginMethod
+    public void wakeDownloadModel(PluginCall call) {
+        JSObject out = new JSObject();
+        out.put("ok", false);
+        out.put("message", "No wake-word model is bundled with this build.");
+        call.resolve(out);
+    }
 
     private byte[] readAll(InputStream in, long limit) throws Exception {
         ByteArrayOutputStream buffer = new ByteArrayOutputStream();

@@ -120,3 +120,29 @@ diagnostics text from Settings → Diagnostics.
 | next | see the Actions tab | workflow now uses the runner's preinstalled SDK: accepts licences, installs `platforms;android-35` + `build-tools;35.0.0` only, then runs tests, build, `cap sync`, Gradle and the APK verification |
 
 The project itself was not implicated in run #3 — checkout, `npm ci`, tests, build and Gradle never executed. The same Gradle task sequence succeeds locally (`BUILD SUCCESSFUL`, 6,550,482-byte APK).
+
+## Evolution / standalone-provider pass
+
+New automated coverage (`web/tests/ai.test.mjs`, 36 tests, 67 total):
+
+- 20-provider catalogue integrity, HTTPS policy, URL normalisation.
+- OpenAI/Anthropic/Gemini/Cohere request building, tool round-trips, response and
+  model-list parsing, malformed tool arguments, 401/429 error text without keys.
+- SSE accumulation for OpenAI (text + fragmented tool arguments) and Anthropic.
+- Role routing and explicit-only fallback.
+- SQLite schema, dedupe/confirmation, address supersession, secret rejection,
+  hard delete, forget-by-fragment, retrieval ranking/supersession exclusion,
+  archive search + exact-message recall, usage totals, export without secrets.
+- Memory extraction (preference, address, project, reminder, forget) and
+  rejection of credential-shaped utterances.
+- Evolution: drafts only from verified success, hypothesis vs observation,
+  evaluation failures, protected-surface approval, rollback reconstruction.
+- Greetings: four periods, first run, returning session, mic denial, backend
+  outage, quiet hours, dedupe, address and TTS-honesty.
+- Persona prompt and error-code mapping.
+
+Checks run: `npm test` 67/67 pass · `npx tsc --noEmit` clean · `npm run build`
+succeeds. **Not run:** Gradle compile of the new Java classes (no SDK/JDK in
+this environment), any physical-device behaviour (provider network, SQLite,
+voice, Keystore), streaming UI. Those remain unverified and are listed in
+EVOLUTION_AUDIT.md.

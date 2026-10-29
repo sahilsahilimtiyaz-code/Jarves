@@ -10,6 +10,7 @@ import { voiceStateLabel } from "../lib/voiceState";
 import { planPhoneAction, type PhoneAction } from "../lib/actionPlan";
 import { executePhoneAction, type ActionOutcome } from "../lib/actions";
 import * as native from "../platform/native";
+import { getJarvisAI, initMind } from "../lib/ai/runtime";
 import { Sheet } from "./ui";
 import type { ScreenProps } from "./types";
 
@@ -32,6 +33,8 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
   const [attachment, setAttachment] = useState<ChatAttachment | null>(null);
   const [lastUserText, setLastUserText] = useState<string>("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [aiThinking, setAiThinking] = useState(false);
+  const conversationId = useRef(`conv_${Date.now().toString(36)}`);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -106,7 +109,41 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
         }
       }
 
-      // 2) Everything else goes to the real backend.
+      // 2) A configured on-device provider answers directly — no PC required.
+      const providerReady = await getJarvisAI()
+        .gateway.load()
+        .then((configs) => configs.some((config) => config.enabled))
+        .catch(() => false);
+      if (providerReady) {
+        const prompt = value || "(attachment)";
+        pushChat({ id: nextId(), role: "user", text: prompt, ts: Date.now() });
+        setLastUserText(prompt);
+        setAiThinking(true);
+        try {
+          await initMind();
+          const result = await getJarvisAI().handle(prompt, {
+            conversationId: conversationId.current,
+            approve: async (request) =>
+              typeof window === "undefined"
+                ? false
+                : window.confirm(`${request.label}\n\nAllow JARVIS to run “${request.tool}”?`),
+          });
+          pushChat({ id: nextId(), role: "assistant", text: result.text, ts: Date.now() });
+          if (voiceEnabled) void voicePipeline.speak(result.text);
+        } catch (e) {
+          pushChat({
+            id: nextId(),
+            role: "error",
+            text: e instanceof Error ? e.message : "The provider request failed.",
+            ts: Date.now(),
+          });
+        } finally {
+          setAiThinking(false);
+        }
+        return;
+      }
+
+      // 3) Everything else goes to the configured JARVIS backend.
       const reachable = health.status === "online" || (!backendConfigured() && health.status !== "unconfigured");
       if (!reachable || !connected) {
         pushChat({
@@ -133,7 +170,7 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
       }
       sendToBackend(value || "(attached image)", true);
     },
-    [text, attachment, voice.state, health.status, connected, pushChat, addAttachment, sendToBackend],
+    [text, attachment, voice.state, health.status, connected, pushChat, addAttachment, sendToBackend, voiceEnabled],
   );
 
   const reportOutcome = (outcome: ActionOutcome) => {
@@ -233,7 +270,8 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
   };
 
   const lastAssistant = [...chat].reverse().find((m) => m.role === "assistant");
-  const busy = orbState === "thinking" || voice.state === "THINKING" || voice.state === "SUBMITTING_REQUEST";
+  const busy =
+    aiThinking || orbState === "thinking" || voice.state === "THINKING" || voice.state === "SUBMITTING_REQUEST";
   const listening = voice.state === "LISTENING";
   const speaking = voice.state === "SPEAKING";
 

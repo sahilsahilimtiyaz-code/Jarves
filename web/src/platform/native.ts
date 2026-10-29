@@ -68,6 +68,11 @@ const EVENTS = [
   "ttsRange",
   "ttsDone",
   "ttsError",
+  "httpChunk",
+  "httpDone",
+  "httpError",
+  "wakeWord",
+  "wakeState",
 ] as const;
 
 type NativeEventName = (typeof EVENTS)[number];
@@ -254,6 +259,95 @@ export function pickFile(): Promise<{
   cancelled?: boolean;
 }> {
   return call("pickFile");
+}
+
+// ── Secure credential vault (Android Keystore) ────────────────────────────
+
+export function secureSet(name: string, value: string): Promise<void> {
+  return call("secureSet", { name, value });
+}
+
+export function secureGet(name: string): Promise<{ value: string | null }> {
+  return call("secureGet", { name });
+}
+
+export function secureRemove(name: string): Promise<void> {
+  return call("secureRemove", { name });
+}
+
+// ── Local SQLite memory ───────────────────────────────────────────────────
+
+export function dbQuery(sql: string, params: unknown[] = []): Promise<{ rows: Record<string, any>[] }> {
+  return call("dbQuery", { sql, params });
+}
+
+export function dbExec(sql: string, params: unknown[] = []): Promise<{ changes: number }> {
+  return call("dbExec", { sql, params });
+}
+
+// ── Provider network (native HTTP avoids provider CORS) ───────────────────
+
+export interface NativeHttpResponse {
+  status: number;
+  body: string;
+}
+
+export function httpRequest(input: {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body?: string;
+  timeoutMs?: number;
+  allowInsecure?: boolean;
+}): Promise<NativeHttpResponse> {
+  return call("httpRequest", input);
+}
+
+export function httpStreamStart(input: {
+  url: string;
+  method: string;
+  headers: Record<string, string>;
+  body?: string;
+  timeoutMs?: number;
+  allowInsecure?: boolean;
+}): Promise<{ streamId: string }> {
+  return call("httpStreamStart", input);
+}
+
+export function httpAbort(input: { streamId: string }): Promise<void> {
+  return call("httpAbort", input);
+}
+
+// ── Wake word (foreground microphone service) ─────────────────────────────
+
+export interface WakeStatus {
+  state: "off" | "starting" | "monitoring" | "paused" | "wake" | "error" | "model-missing";
+  modelReady: boolean;
+  message?: string;
+}
+
+export function wakeStatus(): Promise<WakeStatus> {
+  return call("wakeStatus");
+}
+
+export function wakeStart(): Promise<WakeStatus> {
+  return call("wakeStart");
+}
+
+export function wakeStop(): Promise<WakeStatus> {
+  return call("wakeStop");
+}
+
+export function wakePause(): Promise<WakeStatus> {
+  return call("wakePause");
+}
+
+export function wakeResume(): Promise<WakeStatus> {
+  return call("wakeResume");
+}
+
+export function wakeDownloadModel(): Promise<{ ok: boolean; message: string }> {
+  return call("wakeDownloadModel");
 }
 
 /** Test hook: forget cached plugin/listener state (never used in production). */
