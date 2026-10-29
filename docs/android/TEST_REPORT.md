@@ -233,3 +233,69 @@ implemented — the bridge reports it as unavailable), and GitHub Actions itself
 
 The battery-question path is exercised by unit tests only as far as action
 planning; the native read is device-only.
+
+## Neural Core orb — v0.7.0
+
+`web/src/mobile/JarvisCore.tsx` was rebuilt. The component API (`JarvisCore` props,
+`useCoreMeter`) is unchanged, so `HomeScreen` needed no edits and no other screen,
+store, voice pipeline, provider path or native bridge was touched.
+
+### Layers (back → front)
+
+| Layer | Technique | Why |
+|---|---|---|
+| Halo | additive radial falloff shader on one plane | atmosphere without a bloom pass |
+| Instrument ring | polar tick/bracket shader on one plane | fine technical detail outside the shell |
+| Volumetric bloom | rays + lens ring + hash sparkle, one plane | glow falloff, skipped on the lowest tier |
+| Deep-space dust | 170 GPU points sharing one generated dot sprite | depth at one draw call |
+| Neural field | 240 shader points (twinkle, inward pull) + real `LineSegments` between genuinely close particles | reads as a living network, not confetti |
+| Drifters | 42 points whose radius/life fade are computed in the vertex shader | outward motion for zero CPU cost |
+| Orbit system | 3 inclined thin tori + path particles + one travelling pulse each | layered 3D depth, unequal brightness |
+| Nucleus | additive icosahedron, breathing with level | internal light source |
+| Volume | shaded `SphereGeometry` with two sharpened filament fields, violet bands, Fresnel edge and directional shading | the dominant object reads as a lit volume, not a glow ball |
+| Streams | additive inner sphere with long liquid bands | energy moving *through* the glass |
+| Membrane | Fresnel shell with lat/long engraving, one specular highlight and a touch ripple | thin glass surface with detail on inspection |
+
+### State honesty
+
+- Level = `max(store.audioLevel, voicePipeline level)` — the recogniser RMS / TTS
+  analyser. No synthetic waveform anywhere.
+- `LISTENING` / `THINKING` / `SPEAKING` only change the shader energy, orbital speed
+  and particle pull; the label under the core is driven by the same store state.
+- `offline` desaturates the palette and drops energy to ~0 within ~0.4 s.
+- Touch produces a ripple only; it does not fake a listening session or navigate.
+
+### Performance work
+
+- One `requestAnimationFrame` loop; no geometry, material, array or listener is
+  created per frame (pulses reuse a single `BufferAttribute`).
+- Quality tiers: DPR 2 / 1.5 / 1, particle draw ranges 240/150/96, bloom + links +
+  drifters disabled at the lowest tier; adapts from measured FPS (down at <45 fps,
+  back up only after 4 consecutive >57 fps windows, 2.5–4 s cooldown).
+- Paused when the orb scrolls out of view (`IntersectionObserver`), when the page is
+  hidden, and after WebGL context loss; resumes on visibility/restore.
+- `prefers-reduced-motion` scales all motion to 22% and disables parallax.
+- Full disposal of geometries, materials, the shared dot texture and the renderer;
+  CSS dial fallback when WebGL fails.
+
+### Checks executed
+
+| Check | Command | Result |
+|---|---|---|
+| TypeScript | `npx tsc --noEmit` | ✅ clean |
+| Unit tests | `npm test` | ✅ **86/86 pass** |
+| Production build | `npm run build` | ✅ exit 0 — `MobileShell` chunk 582.89 kB (150.61 kB gzip), +17 kB vs 0.6.0 |
+| Capacitor sync | `npx cap sync android` | ✅ exit 0 |
+| Android debug build | `./gradlew assembleDebug --no-daemon` | ✅ `BUILD SUCCESSFUL`, 0 `error:` lines |
+| APK | `stat` / `unzip -l` | ✅ 6,764,909 bytes; `assets/public/assets/MobileShell-BNpPey60.js` present |
+| APK checksum | `shasum -a 256` | `3598468d0b219456491e13fbafea3f18679e0e9e004a750cf6cf7207800ba7fc` |
+
+### Not verified
+
+There is no GPU, browser or Android device in this VM, so **nothing here proves the
+orb renders or holds 60 fps**. Unverified: shader compilation on Adreno/Mali (all
+shaders are GLSL ES 1.0, loop-free, sine-based — no hash-noise per fragment), actual
+frame timing, visual quality on the A54 panel, touch ripple feel, context-loss
+recovery on device, and battery impact. If a shader fails to compile on a specific
+device, the canvas stays black while the DOM label still reports the true state —
+report the device model and I will simplify that shader.
