@@ -45,3 +45,6 @@ data/research/
 
 # Local build artifacts (APKs, screenshots) are not source
 /artifacts/
+
+# local JDK/SDK used only for verification builds
+.toolchain/

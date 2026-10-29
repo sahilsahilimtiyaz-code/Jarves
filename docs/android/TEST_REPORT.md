@@ -146,3 +146,17 @@ succeeds. **Not run:** Gradle compile of the new Java classes (no SDK/JDK in
 this environment), any physical-device behaviour (provider network, SQLite,
 voice, Keystore), streaming UI. Those remain unverified and are listed in
 EVOLUTION_AUDIT.md.
+
+## CI run #6 failure and the Android compile
+
+- **CI #6 failed before the Android build**: the runner used Node 20, which has no
+  `node:sqlite`, so `tests/ai.test.mjs` could not load. Fixed by moving the
+  workflow to Node 24 and declaring `engines.node >= 22.5`; the suite then runs
+  67/67 locally on the same Node version.
+- **Java compiled locally**: JDK 21 + Android SDK 35, `./gradlew assembleDebug`
+  → **BUILD SUCCESSFUL** (222 tasks). This covers the new `JarvisSecureStore`,
+  `JarvisDb`, `JarvisHttp` and the new plugin methods.
+- Local debug APK produced by that build: 6602678 bytes, sha256 `5974adaea5b66362083b3baf31a3cc34fcda87d0781d4081baef402f708d73d7`,
+  web bundle present: 1 entry.
+- Still unverified: provider network calls, Keystore encryption, SQLite on a
+  real device, voice, and every hardware interaction. Those need the phone.
