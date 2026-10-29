@@ -162,18 +162,114 @@ async function attachListeners(plugin: any): Promise<void> {
 
 // ── Typed call helpers ─────────────────────────────────────────────────────
 
+const DEFAULT_CALL_TIMEOUT = 20_000;
+
+/**
+ * Per-method ceilings. A Capacitor bridge call that never resolves used to
+ * leave the UI stuck on "Saving…" forever; every call now fails loudly instead.
+ */
+const CALL_TIMEOUTS: Record<string, number> = {
+  dbQuery: 15_000,
+  dbExec: 15_000,
+  secureSet: 15_000,
+  secureGet: 15_000,
+  secureRemove: 15_000,
+  getCapabilities: 12_000,
+  checkPermissions: 12_000,
+  checkMicPermission: 12_000,
+  requestMicPermission: 60_000,
+  requestCameraPermission: 60_000,
+  requestNotificationPermission: 60_000,
+  httpRequest: 150_000,
+  httpRequestBase64: 150_000,
+  httpStreamStart: 30_000,
+  httpAbort: 10_000,
+  startListening: 25_000,
+  stopListening: 15_000,
+  speak: 20_000,
+  stopSpeaking: 10_000,
+  getVoices: 15_000,
+  listApps: 20_000,
+  openApp: 20_000,
+};
+
+/** Resolve `promise` or reject with a bridge-specific message after `ms`. */
+export async function withTimeout<T>(promise: Promise<T>, label: string, ms = DEFAULT_CALL_TIMEOUT): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((_resolve, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`The Android bridge did not answer “${label}” within ${Math.round(ms / 1000)}s.`)),
+          ms,
+        );
+      }),
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 async function call<T>(method: string, args?: Record<string, unknown>): Promise<T> {
   const plugin = await nativePlugin();
   if (!plugin) throw new Error("Native bridge unavailable");
-  return (await plugin[method](args ?? {})) as T;
+  const fn = (plugin as any)[method];
+  if (typeof fn !== "function") {
+    throw new Error(`The installed APK does not implement “${method}”. Install the current build.`);
+  }
+  return await withTimeout(fn.call(plugin, args ?? {}) as Promise<T>, method, CALL_TIMEOUTS[method] ?? DEFAULT_CALL_TIMEOUT);
+}
+
+/** Normalise Capacitor's permission enum ("GRANTED", "PROMPT_WITH_RATIONALE"). */
+export function normalizePermissionState(raw: unknown):
+  | "granted"
+  | "denied"
+  | "prompt"
+  | "prompt_with_rationale"
+  | "unknown" {
+  const value = String(raw ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/[\s-]+/g, "_");
+  if (value === "granted" || value === "denied" || value === "prompt" || value === "prompt_with_rationale") {
+    return value;
+  }
+  return "unknown";
 }
 
 export function getCapabilities(): Promise<any> {
   return call("getCapabilities");
 }
 
+export interface NativePermissionReport {
+  microphone: string;
+  camera: string;
+  notifications: string;
+  speechRecognition: boolean;
+  tts: boolean;
+  ttsReady?: boolean;
+  files?: boolean;
+  plugin?: string;
+}
+
 export function checkMicPermission(): Promise<{ state: string }> {
   return call("checkMicPermission");
+}
+
+/** Everything the Permissions card needs, in one real native call. */
+export async function checkPermissions(): Promise<NativePermissionReport> {
+  const raw = await call<Partial<NativePermissionReport>>("checkPermissions");
+  return {
+    microphone: normalizePermissionState(raw?.microphone),
+    camera: normalizePermissionState(raw?.camera),
+    notifications: normalizePermissionState(raw?.notifications),
+    speechRecognition: Boolean(raw?.speechRecognition),
+    tts: Boolean(raw?.tts),
+    ttsReady: Boolean(raw?.ttsReady),
+    files: raw?.files !== false,
+    plugin: typeof raw?.plugin === "string" ? raw.plugin : undefined,
+  };
 }
 
 export function requestMicPermission(): Promise<{ granted: boolean }> {

@@ -59,9 +59,42 @@ export async function initMind(): Promise<void> {
     migration = (async () => {
       if (!(await nativeBackend())) throw new Error(MEMORY_UNAVAILABLE);
       await getJarvisAI().store.migrate();
-    })();
+    })().catch((error) => {
+      // A failed migration must be retryable: keep the reason, drop the memo.
+      migration = null;
+      throw error;
+    });
   }
   return migration;
+}
+
+export function resetNativeCheck(): void {
+  nativeChecked = null;
+}
+
+/**
+ * Real read/write probe of the on-device database. The Memory screen shows the
+ * outcome, so "providers do not stick" becomes a concrete message instead of
+ * a silent failure.
+ */
+export async function storageProbe(): Promise<{ ok: boolean; message: string }> {
+  try {
+    await initMind();
+    const store = getJarvisAI().store;
+    const key = "diag.storageProbe";
+    const token = `probe_${Date.now()}`;
+    await store.setSetting(key, token);
+    const read = await store.getSetting<string>(key, "");
+    if (read !== token) {
+      return {
+        ok: false,
+        message: `The local database accepted a write but returned “${read || "nothing"}”. On-device storage is not reliable in this build.`,
+      };
+    }
+    return { ok: true, message: "Local SQLite read/write verified — settings, keys and memory will survive a restart." };
+  } catch (e) {
+    return { ok: false, message: e instanceof Error ? e.message : "The local database did not respond." };
+  }
 }
 
 /** Dev-only store that fails loudly (used to prove the UI never fakes data). */

@@ -4,7 +4,7 @@ import { wsClient } from "../lib/ws";
 import { backendConfigured } from "../lib/backend";
 import { uploadImage } from "../lib/api";
 import { usePrefs } from "../lib/prefs";
-import { useBackendHealth, useVoiceStatus } from "./hooks";
+import { useBackendHealth, useProviderStatus, useVoiceStatus } from "./hooks";
 import { voicePipeline } from "../lib/voicePipeline";
 import { voiceStateLabel } from "../lib/voiceState";
 import { planPhoneAction, type PhoneAction } from "../lib/actionPlan";
@@ -13,6 +13,9 @@ import * as native from "../platform/native";
 import { getJarvisAI, initMind } from "../lib/ai/runtime";
 import { Sheet } from "./ui";
 import type { ScreenProps } from "./types";
+
+/** One conversation per app session, kept across tab switches. */
+const SESSION_CONVERSATION_ID = `conv_${Date.now().toString(36)}`;
 
 export default function ChatScreen({ onNavigate }: ScreenProps) {
   const chat = useStore((s) => s.chat);
@@ -25,6 +28,7 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
 
   const voice = useVoiceStatus();
   const health = useBackendHealth(30_000);
+  const provider = useProviderStatus();
   const micLanguage = usePrefs((s) => s.micLanguage);
 
   const [text, setText] = useState("");
@@ -34,7 +38,7 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
   const [lastUserText, setLastUserText] = useState<string>("");
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [aiThinking, setAiThinking] = useState(false);
-  const conversationId = useRef(`conv_${Date.now().toString(36)}`);
+  const conversationId = useRef(SESSION_CONVERSATION_ID);
 
   const scrollRef = useRef<HTMLDivElement>(null);
   const contentRef = useRef<HTMLDivElement>(null);
@@ -110,10 +114,14 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
       }
 
       // 2) A configured on-device provider answers directly — no PC required.
-      const providerReady = await getJarvisAI()
-        .gateway.load()
-        .then((configs) => configs.some((config) => config.enabled))
-        .catch(() => false);
+      let providerConfigs: Awaited<ReturnType<ReturnType<typeof getJarvisAI>["gateway"]["load"]>> = [];
+      let providerError: string | null = null;
+      try {
+        providerConfigs = await getJarvisAI().gateway.load(true);
+      } catch (e) {
+        providerError = e instanceof Error ? e.message : "Local provider storage is unavailable.";
+      }
+      const providerReady = providerConfigs.some((config) => config.enabled);
       if (providerReady) {
         const prompt = value || "(attachment)";
         pushChat({ id: nextId(), role: "user", text: prompt, ts: Date.now() });
@@ -155,10 +163,13 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
         pushChat({
           id: nextId(),
           role: "error",
-          text:
-            health.status === "unconfigured"
-              ? "No JARVIS backend is configured, so this request was not sent. Open Settings → Backend, enter your server address and run the connection test."
-              : "The JARVIS live channel is not connected. Nothing was sent. Check the backend address/network in Settings and use Reconnect.",
+          text: providerError
+            ? `Your provider settings could not be read from local storage (${providerError}), so nothing was sent. Local phone actions still work.`
+            : providerConfigs.length > 0
+              ? "Your provider is saved but disabled, so nothing was sent. Enable it in Memory → Providers."
+              : health.status === "unconfigured"
+                ? "No AI model is configured yet, so nothing was sent. Open Memory → Providers, add a key and a model ID, then save. (A JARVIS backend is optional and is not required for this.)"
+                : "No model is configured and the JARVIS live channel is not connected. Nothing was sent. Add a provider in Memory → Providers, or fix the backend address in Settings.",
           ts: Date.now(),
         });
         return;
@@ -283,9 +294,31 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
           <div className="m-h2 mt-0.5">J.A.R.V.I.S.</div>
         </div>
         <div className="flex items-center gap-2">
-          <span className="m-chip" data-tone={health.status === "online" && connected ? "ok" : health.status === "unconfigured" ? "warn" : "danger"}>
-            <span className="m-dot" data-state={health.status === "online" ? (connected ? "online" : "checking") : health.status === "unconfigured" ? "idle" : "offline"} />
-            {health.status === "online" ? (connected ? "online" : "reconnecting") : health.status === "unconfigured" ? "no backend" : "offline"}
+          <span
+            className="m-chip"
+            data-tone={provider.active || health.status === "online" ? "ok" : provider.error ? "danger" : "warn"}
+          >
+            <span
+              className="m-dot"
+              data-state={
+                provider.active || (health.status === "online" && connected)
+                  ? "online"
+                  : health.status === "checking" || provider.loading
+                    ? "checking"
+                    : health.status === "unconfigured"
+                      ? "idle"
+                      : "offline"
+              }
+            />
+            {provider.active
+              ? provider.active.model
+              : health.status === "online"
+                ? connected
+                  ? "backend online"
+                  : "reconnecting"
+                : health.status === "unconfigured"
+                  ? "no model"
+                  : "offline"}
           </span>
           <button
             type="button"
@@ -299,14 +332,18 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
         </div>
       </div>
 
-      {health.status === "unconfigured" && (
+      {!provider.loading && !provider.active && (
         <button
           type="button"
           className="mx-4 mb-2 rounded-xl border border-amber-300/30 bg-amber-300/10 p-3 text-left"
-          onClick={() => onNavigate("settings")}
+          onClick={() => onNavigate("memory")}
         >
-          <div className="m-row-title">Backend not configured</div>
-          <div className="m-row-sub mt-1">Chat and the tool registry stay offline until you configure and test a JARVIS backend. Tap to set it up.</div>
+          <div className="m-row-title">{provider.error ? "Provider settings unreadable" : "No AI model configured"}</div>
+          <div className="m-row-sub mt-1">
+            {provider.error
+              ? `${provider.error} Phone actions still work on this device.`
+              : "Add a provider key and a model in Memory → Providers; it answers directly from this phone. Local phone actions already work, and a JARVIS backend is optional."}
+          </div>
         </button>
       )}
 
@@ -315,7 +352,7 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
           <div className="m-card m-card-pad mt-2">
             <div className="m-label">Ready</div>
             <p className="m-body mt-2">
-              Speak or type a request. I can answer through your JARVIS backend, or perform supported phone actions directly:
+              Speak or type a request. These phone actions run on this device right now — no model or backend needed:
             </p>
             <div className="mt-3 flex flex-wrap gap-2">
               {[
@@ -440,7 +477,13 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
             className="m-textarea"
             rows={1}
             value={text}
-            placeholder={listening ? "Listening… speak now" : health.status === "online" ? "Ask JARVIS, or give a phone command…" : "Type a phone command (chat needs a backend)"}
+            placeholder={
+              listening
+                ? "Listening… speak now"
+                : provider.active || health.status === "online"
+                  ? "Ask JARVIS, or give a phone command…"
+                  : "Phone command — add a model for AI chat"
+            }
             onChange={(event) => {
               setText(event.target.value);
               const el = event.currentTarget;
@@ -477,7 +520,7 @@ export default function ChatScreen({ onNavigate }: ScreenProps) {
         <div className="m-composer-hint">
           {voice.state === "ERROR" && voice.error
             ? voice.error
-            : `${voiceStateLabel(voice.state)}${voice.engine !== "none" ? ` · ${voice.engine} engine` : ""}${lastUserText ? " · Shift+Enter for a new line" : ""}`}
+            : `${voiceStateLabel(voice.state)}${voice.engine !== "none" ? ` · ${voice.engine} engine` : " · engine not detected"}${provider.active ? ` · ${provider.active.model}` : ""}${lastUserText ? " · Shift+Enter for a new line" : ""}`}
         </div>
       </div>
 

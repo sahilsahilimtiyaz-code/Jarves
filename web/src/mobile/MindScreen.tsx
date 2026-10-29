@@ -9,7 +9,7 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { PROVIDERS, providerById } from "../lib/ai/catalog";
-import { getJarvisAI, initMind } from "../lib/ai/runtime";
+import { getJarvisAI, initMind, storageProbe } from "../lib/ai/runtime";
 import type { ProviderConfig } from "../lib/ai/types";
 import type { EvolutionEvent, MemoryRecord, ProcedureRecord } from "../lib/ai/store";
 import type { MindPrefs } from "../lib/ai/index";
@@ -113,6 +113,10 @@ export default function MindScreen({ onNavigate }: ScreenProps) {
 
   const saveProvider = () =>
     run("save", async () => {
+      // 1) The schema must exist before the first write.
+      await initMind();
+      const hadKey = Boolean(draft.key.trim());
+      // 2) Persist config + key (config in SQLite, key in the Keystore).
       const config = await ai.gateway.upsert({
         id: draft.id,
         provider: draft.provider,
@@ -121,10 +125,23 @@ export default function MindScreen({ onNavigate }: ScreenProps) {
         apiKey: draft.key,
         roles: ["default"],
       });
+      // 3) Prove it: read the provider back from the database.
+      const reloaded = await ai.gateway.load(true);
+      const confirmed = reloaded.find((entry) => entry.id === config.id);
+      if (!confirmed) {
+        throw new Error(
+          "The provider was written but could not be read back from local storage. Run “Test local storage” below — the phone's database is not persisting values in this build.",
+        );
+      }
       setDraft(EMPTY_DRAFT);
       setModels([]);
       await refresh();
-      return `${config.label} saved. ${draft.key ? "Key stored in the Keystore." : "No key was entered."}`;
+      const keyNote = hadKey
+        ? await ai.gateway.hasKey(config.id)
+          ? " Key stored and readable in the Android Keystore."
+          : " The key was saved but could not be read back — check “Test” before relying on it."
+        : " No key was entered, so this provider will fail until you add one.";
+      return `${confirmed.label} · ${confirmed.model} saved and verified in on-device storage.${keyNote}`;
     });
 
   const testProvider = (id: string) =>
@@ -272,6 +289,21 @@ export default function MindScreen({ onNavigate }: ScreenProps) {
                 value={draft.key}
                 onChange={(event) => setDraft({ ...draft, key: event.target.value })}
               />
+              {(providerById(draft.provider)?.suggestedModels ?? []).length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {(providerById(draft.provider)?.suggestedModels ?? []).map((model) => (
+                    <button
+                      key={model}
+                      type="button"
+                      className="m-chip"
+                      data-tone={draft.model === model ? "accent" : undefined}
+                      onClick={() => setDraft((current) => ({ ...current, model }))}
+                    >
+                      {model}
+                    </button>
+                  ))}
+                </div>
+              )}
               <div className="mt-2 flex gap-2">
                 <button
                   type="button"
@@ -291,6 +323,38 @@ export default function MindScreen({ onNavigate }: ScreenProps) {
                 development option in the provider definition. Keys are encrypted with Android Keystore and never enter
                 the memory database, logs or exports. A rooted device can still observe a key while the app uses it.
               </p>
+            </Card>
+
+            <Card className="mb-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <div className="m-label">Active model</div>
+                  <div className="m-row-title truncate">
+                    {configs.find((entry) => entry.enabled)?.model ?? "None — chat cannot answer yet"}
+                  </div>
+                </div>
+                <Chip tone={configs.some((entry) => entry.enabled) ? "ok" : "warn"}>
+                  {configs.some((entry) => entry.enabled) ? "ready" : "unset"}
+                </Chip>
+              </div>
+              <p className="m-row-sub mt-1">
+                This model answers straight from the phone. Local phone actions (battery, settings, apps, clipboard) work
+                even with no model and no internet.
+              </p>
+              <button
+                type="button"
+                className="m-btn mt-2"
+                data-size="sm"
+                disabled={busy !== null}
+                onClick={() =>
+                  void run("probe", async () => {
+                    const result = await storageProbe();
+                    return result.message;
+                  })
+                }
+              >
+                {busy === "probe" ? "Checking…" : "Test local storage"}
+              </button>
             </Card>
 
             {configs.length === 0 ? (

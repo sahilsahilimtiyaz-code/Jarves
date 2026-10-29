@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { useStore } from "../lib/store";
 import { usePrefs } from "../lib/prefs";
-import { useBackendHealth, useVoiceStatus, greetingFor, statusLabel } from "./hooks";
+import { useBackendHealth, useProviderStatus, useVoiceStatus, greetingFor, statusLabel } from "./hooks";
 import { useDeviceInfo, describeDevice, formatMb } from "../lib/deviceInfo";
 import { executePhoneAction } from "../lib/actions";
 import { voicePipeline } from "../lib/voicePipeline";
@@ -15,6 +15,7 @@ export default function HomeScreen({ onNavigate }: ScreenProps) {
   const orbState = useStore((s) => s.orbState);
   const tools = useStore((s) => s.tools);
   const health = useBackendHealth(20_000);
+  const provider = useProviderStatus();
   const device = useDeviceInfo(true, 20_000);
   const voice = useVoiceStatus();
   const animationMode = usePrefs((s) => s.animationMode);
@@ -26,13 +27,17 @@ export default function HomeScreen({ onNavigate }: ScreenProps) {
   const [busyAction, setBusyAction] = useState<string | null>(null);
 
   const info = device.snapshot?.info ?? {};
-  const offline = health.status !== "online";
-  const status: "online" | "offline" | "checking" | "idle" =
-    health.status === "online"
+  // A configured on-device model is the primary capability; the JARVIS backend
+  // is optional. "Offline" must therefore never mean "no model configured".
+  const aiReady = Boolean(provider.active);
+  const offline = !aiReady && health.status !== "online";
+  const status: "online" | "offline" | "checking" | "idle" = aiReady
+    ? "online"
+    : health.status === "online"
       ? "online"
       : health.status === "offline"
         ? "offline"
-        : health.status === "checking"
+        : health.status === "checking" || provider.loading
           ? "checking"
           : "idle";
 
@@ -63,21 +68,23 @@ export default function HomeScreen({ onNavigate }: ScreenProps) {
           <div className="flex flex-wrap items-center gap-2">
             <StatusLine
               state={status}
-              label={statusLabel(health, connected)}
+              label={aiReady ? `${provider.active?.label} online` : statusLabel(health, connected)}
               detail={health.status === "online" && health.latencyMs != null ? `${health.latencyMs} ms` : undefined}
             />
           </div>
         }
         right={
           <>
-            <Chip tone={health.status === "online" ? "accent" : "warn"}>
-              {health.status === "online"
-                ? health.model
-                  ? `${health.provider ?? "model"} · ${health.model}`
-                  : "backend linked"
-                : health.status === "unconfigured"
-                  ? "offline mode"
-                  : "no connection"}
+            <Chip tone={aiReady || health.status === "online" ? "accent" : "warn"}>
+              {aiReady
+                ? provider.active!.model
+                : health.status === "online"
+                  ? health.model
+                    ? `${health.provider ?? "model"} · ${health.model}`
+                    : "backend linked"
+                  : provider.error
+                    ? "storage error"
+                    : "no model"}
             </Chip>
             <button
               type="button"
@@ -91,7 +98,14 @@ export default function HomeScreen({ onNavigate }: ScreenProps) {
         }
       />
 
-      <p className="m-body mb-4">{greetingFor()} {offline ? "I need a backend before I can answer, sir." : "All systems are at your service."}</p>
+      <p className="m-body mb-4">
+        {greetingFor()}{" "}
+        {aiReady
+          ? "Your configured model is ready, and phone actions run on this device."
+          : health.status === "online"
+            ? "Your JARVIS backend is reachable."
+            : "No AI model is configured yet — add one in Memory → Providers. Phone actions already work without it."}
+      </p>
 
       <div ref={coreWrapRef} className="mb-4">
         <JarvisCore
@@ -120,16 +134,26 @@ export default function HomeScreen({ onNavigate }: ScreenProps) {
           className="m-btn"
           onClick={() => {
             setBusyAction("battery");
-            void voicePipeline.speak(
-              `Battery at ${info.batteryPercent ?? "unknown"} percent${info.charging ? ", charging" : ""}.`,
-            ).then((res) => {
-              if (!res.ok) setLatestAction({ ok: false, message: res.error ?? "Speech unavailable" });
+            void (async () => {
+              // Read the REAL battery value, then speak that exact result.
+              const outcome = await executePhoneAction({
+                kind: "battery",
+                source: "home quick action",
+                args: {},
+                label: "Battery status",
+                requiresApproval: false,
+              });
+              setLatestAction({ ok: outcome.ok, message: outcome.message });
+              if (outcome.ok) {
+                const spoken = await voicePipeline.speak(outcome.message);
+                if (!spoken.ok) setLatestAction({ ok: false, message: spoken.error ?? "Speech unavailable" });
+              }
               setBusyAction(null);
-            });
+            })();
           }}
           disabled={busyAction === "battery"}
         >
-          <SpeakerIcon /> Speak status
+          <SpeakerIcon /> Read battery aloud
         </button>
         <button type="button" className="m-btn" onClick={() => onNavigate("tools")}>
           <GridIcon /> Phone actions
@@ -200,17 +224,23 @@ export default function HomeScreen({ onNavigate }: ScreenProps) {
         </div>
       </Section>
 
-      <Section title="JARVIS backend" action={<span className="m-row-sub">not this phone</span>}>
+      <Section title="JARVIS backend (optional)" action={<span className="m-row-sub">not required for chat</span>}>
         <Card>
           {health.status === "unconfigured" ? (
             <>
               <div className="m-h2">No backend configured</div>
               <p className="m-small mt-2">
-                Chat, the tool registry and backend memory need a JARVIS backend. Phone actions on the Tools tab work without one.
+                Optional. AI chat uses the model configured on this phone; this backend only adds its tool registry, desktop tools
+                and its own memory. Phone actions never need it.
               </p>
-              <button type="button" className="m-btn mt-3" data-variant="primary" onClick={() => onNavigate("settings")}>
-                Configure backend
-              </button>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <button type="button" className="m-btn" data-variant="primary" onClick={() => onNavigate("memory")}>
+                  Configure AI model
+                </button>
+                <button type="button" className="m-btn" onClick={() => onNavigate("settings")}>
+                  Add backend
+                </button>
+              </div>
             </>
           ) : health.status === "offline" ? (
             <>

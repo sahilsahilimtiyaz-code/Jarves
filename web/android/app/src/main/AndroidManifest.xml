@@ -37,6 +37,14 @@
         <intent>
             <action android:name="android.speech.RecognitionService" />
         </intent>
+        <!--
+          Android 11+ package visibility: TextToSpeech and getVoices() must be
+          able to enumerate TTS engines, otherwise voice output silently looks
+          "unavailable" even when a system voice is installed.
+        -->
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
     </queries>
 
     <application

@@ -459,6 +459,22 @@ class VoicePipeline {
     const clean = cleanSpeechText(text);
     if (!clean) return { ok: false, error: "Nothing to speak" };
 
+    // A configured cloud voice (ElevenLabs, Fish Audio, OpenAI, …) wins.
+    try {
+      const { ttsService } = await import("./ai/tts");
+      if (await ttsService.available()) {
+        this.transition({ type: "speaking" });
+        const cloud = await ttsService.speak(clean);
+        if (cloud.ok) {
+          this.transition({ type: "speech_done" }, { level: 0 });
+          return { ok: true };
+        }
+        console.warn("[voice] cloud voice failed, falling back to the device voice:", cloud.error);
+      }
+    } catch (e) {
+      console.warn("[voice] cloud voice unavailable", e);
+    }
+
     if (await native.nativeAvailable()) {
       this.wireNative();
       this.ttsSession++;
@@ -530,6 +546,12 @@ class VoicePipeline {
   }
 
   async stopSpeaking(): Promise<void> {
+    try {
+      const { ttsService } = await import("./ai/tts");
+      await ttsService.stop();
+    } catch {
+      /* noop */
+    }
     if (await native.nativeAvailable()) {
       try {
         await native.stopSpeaking();

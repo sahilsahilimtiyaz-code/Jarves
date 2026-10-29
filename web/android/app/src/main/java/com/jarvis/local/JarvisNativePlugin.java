@@ -90,6 +90,7 @@ public class JarvisNativePlugin extends Plugin {
 
     private static final String TAG = "JarvisNative";
     private static final String CHANNEL_ID = "jarvis_alerts";
+    private static final String PLUGIN_VERSION = "1.1.0";
     private static final int MAX_IMAGE_DIMENSION = 1600;
     private static final long MAX_FILE_BYTES = 8L * 1024L * 1024L;
 
@@ -142,9 +143,10 @@ public class JarvisNativePlugin extends Plugin {
         out.put("tts", tts != null);
         out.put("ttsReady", ttsReady);
         out.put("camera", getContext().getPackageManager().hasSystemFeature(PackageManager.FEATURE_CAMERA_ANY));
-        out.put("microphonePermission", getPermissionState("microphone").toString());
-        out.put("cameraPermission", getPermissionState("camera").toString());
-        out.put("notificationPermission", getPermissionState("notifications").toString());
+        out.put("microphonePermission", permissionLabel("microphone"));
+        out.put("cameraPermission", permissionLabel("camera"));
+        out.put("notificationPermission", permissionLabel("notifications"));
+        out.put("plugin", PLUGIN_VERSION);
         out.put("apps", true);
         out.put("files", true);
         call.resolve(out);
@@ -152,10 +154,40 @@ public class JarvisNativePlugin extends Plugin {
 
     // ── Permissions ────────────────────────────────────────────────────────
 
+    /**
+     * Capacitor's Java PermissionState renders as "GRANTED"/"PROMPT_WITH_RATIONALE".
+     * The web layer compares against lower-case values, so an un-normalised
+     * state used to read as "not granted" forever. This is the single place
+     * that converts it.
+     */
+    private String permissionLabel(String alias) {
+        PermissionState state = getPermissionState(alias);
+        if (state == null) return "unknown";
+        return state.name().toLowerCase(java.util.Locale.ROOT).replace('-', '_');
+    }
+
     @PluginMethod
     public void checkMicPermission(PluginCall call) {
         JSObject out = new JSObject();
-        out.put("state", getPermissionState("microphone").toString());
+        out.put("state", permissionLabel("microphone"));
+        call.resolve(out);
+    }
+
+    /**
+     * One honest snapshot of every runtime permission plus the speech engines.
+     * The Settings screen renders exactly these values; nothing is inferred.
+     */
+    @PluginMethod
+    public void checkPermissions(PluginCall call) {
+        JSObject out = new JSObject();
+        out.put("microphone", permissionLabel("microphone"));
+        out.put("camera", permissionLabel("camera"));
+        out.put("notifications", permissionLabel("notifications"));
+        out.put("speechRecognition", SpeechRecognizer.isRecognitionAvailable(getContext()));
+        out.put("tts", tts != null);
+        out.put("ttsReady", ttsReady);
+        out.put("files", true);
+        out.put("plugin", PLUGIN_VERSION);
         call.resolve(out);
     }
 

@@ -1,7 +1,9 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { getHealth } from "../lib/api";
 import { backendConfigured, backendBase, subscribeBackend } from "../lib/backend";
 import { voicePipeline, type VoiceSnapshot } from "../lib/voicePipeline";
+import { getJarvisAI, initMind } from "../lib/ai/runtime";
+import type { ProviderConfig } from "../lib/ai/types";
 import { detectPlatform } from "../platform";
 
 /** Voice status without the 60 Hz level stream (chat list must not re-render). */
@@ -24,6 +26,12 @@ export function useVoiceStatus(): VoiceStatus {
       engine: snap.engine,
     };
   });
+
+  // Probe the real engines once per screen mount so "engine: none" only ever
+  // appears when the device genuinely has no recognition/TTS service.
+  useEffect(() => {
+    void voicePipeline.detect();
+  }, []);
 
   useEffect(() => {
     return voicePipeline.subscribe((snap) => {
@@ -174,4 +182,51 @@ export function statusLabel(health: BackendHealthState, wsConnected: boolean): s
   if (health.status === "offline") return "Backend offline";
   if (!wsConnected) return "Backend reachable · live channel reconnecting";
   return "All systems online";
+}
+
+// ── On-device AI provider status ────────────────────────────────────────────
+
+export interface ProviderStatusState {
+  loading: boolean;
+  configs: ProviderConfig[];
+  /** First enabled provider — the model that will actually answer. */
+  active: ProviderConfig | null;
+  error: string | null;
+  refresh: () => Promise<void>;
+}
+
+/**
+ * Reads the configured providers from the real local database. This is what the
+ * UI must use to decide whether chat can answer — the optional JARVIS backend
+ * is a separate capability.
+ */
+export function useProviderStatus(): ProviderStatusState {
+  const [configs, setConfigs] = useState<ProviderConfig[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      await initMind();
+      const list = await getJarvisAI().gateway.load(true);
+      setConfigs(list);
+      setError(null);
+    } catch (e) {
+      setConfigs([]);
+      setError(e instanceof Error ? e.message : "Provider settings could not be read.");
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void refresh();
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void refresh();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => document.removeEventListener("visibilitychange", onVisible);
+  }, [refresh]);
+
+  return { loading, configs, active: configs.find((config) => config.enabled) ?? null, error, refresh };
 }

@@ -48,6 +48,7 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
   const [voices, setVoices] = useState<string[]>([]);
   const [caps, setCaps] = useState<Record<string, unknown> | null>(null);
   const [permState, setPermState] = useState<string>("unknown");
+  const [perms, setPerms] = useState<native.NativePermissionReport | null>(null);
   const [diagnosticsCopied, setDiagnosticsCopied] = useState(false);
   const [micTest, setMicTest] = useState<string | null>(null);
   const [voiceTestState, setVoiceTestState] = useState<string | null>(null);
@@ -60,11 +61,12 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
       const [c, v, p] = await Promise.all([
         native.getCapabilities(),
         native.getVoices(),
-        native.checkMicPermission(),
+        native.checkPermissions(),
       ]);
       setCaps(c || null);
       setVoices(Array.isArray(v?.voices) ? v.voices : []);
-      setPermState(p?.state || "unknown");
+      setPerms(p);
+      setPermState(p.microphone);
     } catch {
       /* diagnostics stay honest: absent values simply stay empty */
     }
@@ -202,7 +204,25 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
         }
       />
 
-      <Section title="Backend connection">
+      <Section title="AI model (on this phone)">
+        <Card>
+          <Row
+            title="Provider & model"
+            subtitle="Answers directly from the device — no PC or backend required"
+            right={
+              <button type="button" className="m-btn" data-size="sm" data-variant="primary" onClick={() => onNavigate("memory")}>
+                Configure
+              </button>
+            }
+          />
+          <p className="m-row-sub mt-2">
+            Keys are encrypted with the Android Keystore. If chat says “no model”, open Memory → Providers and use
+            “Test local storage” to see the exact database error.
+          </p>
+        </Card>
+      </Section>
+
+      <Section title="Backend connection (optional)">
         <Card className="mb-3">
           <div className="m-label mb-2">JARVIS backend address</div>
           <input
@@ -330,35 +350,47 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
         <Card>
           <Row
             title="Microphone"
-            subtitle="Required for voice input and speech recognition"
-            right={<span className="m-chip" data-tone={permState === "granted" ? "ok" : "warn"}>{permState}</span>}
+            subtitle="Voice input via the Android speech recogniser"
+            right={
+              <span className="m-chip" data-tone={permState === "granted" ? "ok" : "warn"}>
+                {permState}
+              </span>
+            }
           />
           <Row
             title="Camera"
             subtitle="Only used when you capture a photo"
             right={
-              <button
-                type="button"
-                className="m-btn"
-                data-size="sm"
-                onClick={() => void native.requestCameraPermission().then(() => refreshNative()).catch(() => undefined)}
-              >
-                Request
-              </button>
+              <span className="m-chip" data-tone={perms?.camera === "granted" ? "ok" : "warn"}>
+                {perms?.camera ?? "unknown"}
+              </span>
             }
           />
           <Row
             title="Notifications"
             subtitle="Local notifications (Android 13+ requires permission)"
             right={
-              <button
-                type="button"
-                className="m-btn"
-                data-size="sm"
-                onClick={() => void native.requestNotificationPermission().then(() => refreshNative()).catch(() => undefined)}
-              >
-                Request
-              </button>
+              <span className="m-chip" data-tone={perms?.notifications === "granted" ? "ok" : "warn"}>
+                {perms?.notifications ?? "unknown"}
+              </span>
+            }
+          />
+          <Row
+            title="Speech recognition engine"
+            subtitle="Android SpeechRecognizer availability, read from the device"
+            right={
+              <span className="m-chip" data-tone={perms?.speechRecognition ? "ok" : "warn"}>
+                {perms ? (perms.speechRecognition ? "available" : "missing") : "unknown"}
+              </span>
+            }
+          />
+          <Row
+            title="Text-to-speech engine"
+            subtitle="Android TTS used for spoken replies"
+            right={
+              <span className="m-chip" data-tone={perms?.ttsReady ? "ok" : "warn"}>
+                {perms ? (perms.ttsReady ? "ready" : perms.tts ? "initialising" : "unavailable") : "unknown"}
+              </span>
             }
           />
           <Row
@@ -525,7 +557,7 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
           <p className="m-small mt-2">
             A mobile-first front-end for the original JARVIS project, connected to your own backend. Voice, chat and phone actions report their real state; nothing is simulated.
           </p>
-          <div className="m-row-sub mt-2">App package: com.jarvis.local · version 0.3.0</div>
+          <div className="m-row-sub mt-2">App package: com.jarvis.local · version 0.6.0</div>
         </Card>
       </Section>
     </div>

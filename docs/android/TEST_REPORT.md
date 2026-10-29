@@ -179,3 +179,57 @@ EVOLUTION_AUDIT.md.
   limits are stated in the UI.
 - Not verified on hardware: cloud voice playback, Keystore decryption, GPU cost
   on a Galaxy A54. Those require the device.
+
+## Debug-and-repair pass — v0.6.0
+
+Reported symptoms: "OFFLINE MODE / No backend configured", "Backend not configured"
+for a battery question, provider form stuck on "Saving…", "No model configured"
+persisting, and "Voice state: Ready · engine: none" with microphone UNKNOWN.
+
+### Confirmed causes and fixes
+
+| # | Cause (file / function) | Fix |
+|---|---|---|
+| 1 | `web/src/mobile/HomeScreen.tsx`, `ChatScreen.tsx`, `hooks.ts:statusLabel` treated the **optional** JARVIS backend as the only AI capability. With a provider saved the UI still said "offline mode" and chat refused with "Backend not configured". | New `useProviderStatus()` in `hooks.ts` reads the real provider list (`gateway.load(true)`) and both screens now report the on-device model separately from the backend. The backend block is labelled optional. |
+| 2 | `JarvisNativePlugin.checkMicPermission` / `getCapabilities` returned Capacitor's Java enum via `toString()` → `"GRANTED"`, while `web/src/platform/native.ts` and the screens compared `"granted"`. Microphone therefore read as not-granted/unknown and `startListening` re-requested permission on every attempt. | `permissionLabel()` lower-cases the enum once on the Java side; new `checkPermissions` plugin method returns mic/camera/notifications + real speech/TTS availability; `normalizePermissionState()` guards the web side. |
+| 3 | Every Capacitor call was awaited with no ceiling, so a bridge call that never answered left `MindScreen.run()` parked and the button showing "Saving…" forever. | `withTimeout()` in `platform/native.ts` wraps **every** bridge call with a per-method ceiling (15 s storage/Keystore, 150 s HTTP, 20 s speech). Failures now surface as text instead of a frozen button. |
+| 4 | `MindScreen.saveProvider()` never awaited schema initialisation and never verified the write, so a provider that failed to persist looked identical to one that saved. | It now awaits `initMind()`, re-reads with `load(true)`, throws if the row is missing, and reports whether the Keystore key was readable back. "Test local storage" (`storageProbe()`) writes and reads a probe row and returns the real SQLite error. |
+| 5 | `AndroidManifest.xml` declared a `<queries>` block for `RecognitionService` but not `TTS_SERVICE`, so on Android 11+ TTS engine discovery could report no voices. | `TTS_SERVICE` intent query added; verified present in the packaged manifest with `aapt2 dump xmltree`. |
+| 6 | `ChatScreen` created its conversation id inside the component, so switching tabs started a new conversation and orphaned the archive rows. | The id is now a module constant for the app session. |
+| 7 | Local phone actions were described in copy as needing a model/backend. | Copy and the "no model" banner now state that battery/settings/apps/clipboard run locally, and the banner links to Memory → Providers instead of Backend. |
+
+### Checks executed
+
+| Check | Command | Result |
+|---|---|---|
+| Unit tests (all suites incl. new provider suite) | `npm test` | ✅ **86/86 pass** |
+| TypeScript | `npx tsc --noEmit` | ✅ clean |
+| Production build | `npm run build` | ✅ exit 0 |
+| Capacitor sync | `npx cap sync android` | ✅ exit 0 |
+| Android debug build | `./gradlew assembleDebug --no-daemon` (JDK 21, SDK 35) | ✅ `BUILD SUCCESSFUL`, 222 tasks, 0 `error:` lines |
+| APK produced | `stat` | ✅ 6,601,335 bytes |
+| Web bundle packaged | `unzip -l` | ✅ `assets/public/index.html` + hashed JS/CSS |
+| Manifest queries | `aapt2 dump xmltree` | ✅ `RecognitionService` **and** `TTS_SERVICE` present |
+| Manifest permissions | `aapt2 dump permissions` | ✅ INTERNET, RECORD_AUDIO, CAMERA, POST_NOTIFICATIONS |
+| New plugin method packaged | dex string scan | ✅ `checkPermissions` in `classes2.dex` / `classes4.dex` |
+| APK checksum | `shasum -a 256` | `65026d2595e81c4c19a670e792d1aaa2521fb1b3dd0ed54faca660dc2e46ec80` |
+
+### New tests (`web/tests/provider.test.mjs`, 8 cases)
+
+- A saved provider is re-read by a **new store + gateway over the same database** (restart simulation) with the same id, model and readable key.
+- The API key never appears in the settings JSON.
+- Empty model / cleartext HTTP endpoint are rejected instead of saved.
+- `chat()` with no provider raises a `config` error rather than inventing a reply.
+- Removing a provider deletes config and key.
+- Updating keeps the id and replaces the model.
+- `normalizePermissionState` maps `GRANTED`/`PROMPT_WITH_RATIONALE`/junk correctly.
+
+### Still unverified (needs the phone — unchanged by a green build)
+
+Provider HTTP/streaming from a real device, Keystore encryption/decryption across
+process death, SQLite on hardware, microphone capture and transcripts, TTS
+playback including cloud voices, permission dialogs, wake-word service (still not
+implemented — the bridge reports it as unavailable), and GitHub Actions itself.
+
+The battery-question path is exercised by unit tests only as far as action
+planning; the native read is device-only.
