@@ -13,6 +13,7 @@ import { voicePipeline } from "../lib/voicePipeline";
 import { wakeWordService } from "../lib/wakeWordService";
 import { useProviderStatus } from "./hooks";
 import { detectPlatform } from "../platform";
+import AccessGate, { shouldShowAccessGate } from "./AccessGate";
 import HomeScreen from "./HomeScreen";
 import ChatScreen from "./ChatScreen";
 import ToolsScreen from "./ToolsScreen";
@@ -22,14 +23,17 @@ import type { MobileTab } from "./types";
 
 const TABS: { tab: MobileTab; label: string; icon: () => JSX.Element }[] = [
   { tab: "home", label: "Home", icon: HomeIcon },
-  { tab: "chat", label: "Chat", icon: ChatIcon },
   { tab: "tools", label: "Tools", icon: ToolsIcon },
+  // Centre position, rendered as the illuminated core button in the nav.
+  { tab: "chat", label: "JARVIS", icon: ChatIcon },
   { tab: "memory", label: "Memory", icon: MemoryIcon },
   { tab: "settings", label: "Settings", icon: SettingsIcon },
 ];
 
 export default function MobileShell() {
   const [tab, setTab] = useState<MobileTab>("home");
+  // First launch must show Android's real permission dialogs before the shell.
+  const [gate, setGate] = useState(() => shouldShowAccessGate());
   const accent = usePrefs((s) => s.accent);
   const streaming = useStore((s) => s.chat.some((entry) => entry.streaming));
   const toolCount = useStore((s) => s.tools.length);
@@ -79,6 +83,8 @@ export default function MobileShell() {
     };
   }, []);
 
+  if (gate) return <AccessGate onDone={() => setGate(false)} />;
+
   const screen =
     tab === "home" ? (
       <HomeScreen onNavigate={setTab} />
@@ -103,10 +109,17 @@ export default function MobileShell() {
             type="button"
             className="m-nav-btn"
             data-active={tab === id}
+            data-core={id === "chat"}
             aria-current={tab === id ? "page" : undefined}
             onClick={() => setTab(id)}
           >
-            <Icon />
+            {id === "chat" ? (
+              <span className="m-nav-core">
+                <ChatIcon />
+              </span>
+            ) : (
+              <Icon />
+            )}
             <span>{label}</span>
             {id === "chat" && streaming && <span className="m-nav-badge">…</span>}
             {id === "tools" && toolCount > 0 && <span className="m-nav-badge">{Math.min(toolCount, 99)}</span>}

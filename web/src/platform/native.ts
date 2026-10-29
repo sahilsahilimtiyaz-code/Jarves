@@ -92,7 +92,16 @@ export function nativePlugin(): Promise<any | null> {
   pluginPromise = (async () => {
     if (typeof window === "undefined") return null;
     const cap = (window as any).Capacitor;
-    if (!cap || typeof cap.isNativePlatform !== "function" || !cap.isNativePlatform()) return null;
+    // Capacitor usually injects the global before the first script, but on a
+    // cold WebView start it can arrive after React's first render. Treat an
+    // Android WebView as native even while `isNativePlatform` is settling, so
+    // the permission gate is never skipped and the plugin can be registered as
+    // soon as the bridge is ready.
+    const reportsNative = typeof cap?.isNativePlatform === "function" ? cap.isNativePlatform() : false;
+    const androidWebView =
+      cap?.getPlatform?.() === "android" ||
+      (typeof navigator !== "undefined" && /Android/i.test(navigator.userAgent) && Boolean(cap));
+    if (!cap || (!reportsNative && !androidWebView)) return null;
     try {
       const core = await import("@capacitor/core");
       return core.registerPlugin("JarvisNative") as any;

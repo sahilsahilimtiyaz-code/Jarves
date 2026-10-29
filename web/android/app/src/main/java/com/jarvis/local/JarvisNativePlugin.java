@@ -66,6 +66,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
 import java.util.UUID;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * JarvisNative — the Android capability bridge.
@@ -108,6 +110,11 @@ public class JarvisNativePlugin extends Plugin {
     private String pendingCapturePath;
 
     private final Handler main = new Handler(Looper.getMainLooper());
+    // SQLite and Android Keystore can block for seconds on a cold start or a
+    // locked database. Running them on the WebView/UI thread froze JavaScript,
+    // so the JS timeout could never fire and "Saving…" stayed on screen
+    // forever. All storage work now runs on this single background thread.
+    private final ExecutorService io = Executors.newSingleThreadExecutor();
     private JarvisDb database;
 
     // ── Lifecycle ──────────────────────────────────────────────────────────
@@ -165,6 +172,7 @@ public class JarvisNativePlugin extends Plugin {
             tts = null;
             ttsReady = false;
         }
+        io.shutdownNow();
         super.handleOnDestroy();
     }
 
@@ -1254,38 +1262,53 @@ public class JarvisNativePlugin extends Plugin {
 
     @PluginMethod
     public void secureSet(PluginCall call) {
-        String name = call.getString("name");
+        final String name = call.getString("name");
         if (name == null || name.trim().isEmpty()) {
             call.reject("A credential name is required.");
             return;
         }
-        try {
-            JarvisSecureStore.put(getContext(), name, call.getString("value", ""));
-            call.resolve();
-        } catch (Exception e) {
-            call.reject("Secure storage failed: " + safeMessage(e));
-        }
+        final String value = call.getString("value", "");
+        io.execute(() -> {
+            try {
+                JarvisSecureStore.put(getContext(), name, value);
+                call.resolve();
+            } catch (Exception e) {
+                call.reject("Secure storage failed: " + safeMessage(e));
+            }
+        });
     }
 
     @PluginMethod
     public void secureGet(PluginCall call) {
-        String name = call.getString("name");
+        final String name = call.getString("name");
         if (name == null || name.trim().isEmpty()) {
             call.reject("A credential name is required.");
             return;
         }
-        JSObject out = new JSObject();
-        out.put("value", JarvisSecureStore.get(getContext(), name));
-        call.resolve(out);
+        io.execute(() -> {
+            try {
+                JSObject out = new JSObject();
+                out.put("value", JarvisSecureStore.get(getContext(), name));
+                call.resolve(out);
+            } catch (Exception e) {
+                call.reject("Secure storage read failed: " + safeMessage(e));
+            }
+        });
     }
 
     @PluginMethod
     public void secureRemove(PluginCall call) {
-        String name = call.getString("name");
-        if (name != null && !name.trim().isEmpty()) {
-            JarvisSecureStore.remove(getContext(), name);
-        }
-        call.resolve();
+        final String name = call.getString("name");
+        io.execute(() -> {
+            try {
+                if (name != null && !name.trim().isEmpty()) {
+                    JarvisSecureStore.remove(getContext(), name);
+                }
+                call.resolve();
+            } catch (Exception e) {
+                call.reject("Secure storage delete failed: " + safeMessage(e));
+            }
+        });
     }
 
     // ── Local SQLite memory (schema owned by the TypeScript memory layer) ───
@@ -1297,38 +1320,42 @@ public class JarvisNativePlugin extends Plugin {
 
     @PluginMethod
     public void dbQuery(PluginCall call) {
-        String sql = call.getString("sql");
+        final String sql = call.getString("sql");
         if (sql == null || sql.trim().isEmpty()) {
             call.reject("SQL is required.");
             return;
         }
-        JSArray params = call.getArray("params", new JSArray());
-        try {
-            JSONArray rows = JarvisDb.query(db().getWritableDatabase(), sql, new JSONArray(params.toString()));
-            JSObject out = new JSObject();
-            out.put("rows", rows);
-            call.resolve(out);
-        } catch (Exception e) {
-            call.reject("Local memory read failed: " + safeMessage(e));
-        }
+        final JSArray params = call.getArray("params", new JSArray());
+        io.execute(() -> {
+            try {
+                JSONArray rows = JarvisDb.query(db().getWritableDatabase(), sql, new JSONArray(params.toString()));
+                JSObject out = new JSObject();
+                out.put("rows", rows);
+                call.resolve(out);
+            } catch (Exception e) {
+                call.reject("Local memory read failed: " + safeMessage(e));
+            }
+        });
     }
 
     @PluginMethod
     public void dbExec(PluginCall call) {
-        String sql = call.getString("sql");
+        final String sql = call.getString("sql");
         if (sql == null || sql.trim().isEmpty()) {
             call.reject("SQL is required.");
             return;
         }
-        JSArray params = call.getArray("params", new JSArray());
-        try {
-            JarvisDb.exec(db().getWritableDatabase(), sql, new JSONArray(params.toString()));
-            JSObject out = new JSObject();
-            out.put("changes", 0);
-            call.resolve(out);
-        } catch (Exception e) {
-            call.reject("Local memory write failed: " + safeMessage(e));
-        }
+        final JSArray params = call.getArray("params", new JSArray());
+        io.execute(() -> {
+            try {
+                JarvisDb.exec(db().getWritableDatabase(), sql, new JSONArray(params.toString()));
+                JSObject out = new JSObject();
+                out.put("changes", 0);
+                call.resolve(out);
+            } catch (Exception e) {
+                call.reject("Local memory write failed: " + safeMessage(e));
+            }
+        });
     }
 
     // ── Provider HTTP (native avoids provider CORS blocks) ──────────────────

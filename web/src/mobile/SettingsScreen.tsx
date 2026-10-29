@@ -17,6 +17,7 @@ import { voiceStateLabel } from "../lib/voiceState";
 import * as native from "../platform/native";
 import TtsPanel from "./TtsPanel";
 import { detectPlatform } from "../platform";
+import { APP_BUILD } from "../lib/version";
 import { Card, Chip, Row, ScreenHeader, Section, Toggle } from "./ui";
 import type { ScreenProps } from "./types";
 
@@ -614,6 +615,10 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
             <div className="m-row-sub">Voice: {voice.state} · {voice.engine}</div>
             <div className="m-row-sub">Mic permission: {permState}</div>
             <div className="m-row-sub">Native caps: {caps ? Object.keys(caps).length + " reported" : "not available"}</div>
+            <div className="m-row-sub">
+              Native bridge: {caps && typeof caps.plugin === "string" ? `v${caps.plugin}` : "unavailable"}
+            </div>
+            <div className="m-row-sub">App build: {APP_BUILD}</div>
           </div>
         </Card>
       </Section>
@@ -624,7 +629,10 @@ export default function SettingsScreen({ onNavigate }: ScreenProps) {
           <p className="m-small mt-2">
             A mobile-first front-end for the original JARVIS project, connected to your own backend. Voice, chat and phone actions report their real state; nothing is simulated.
           </p>
-          <div className="m-row-sub mt-2">App package: com.jarvis.local · version 0.7.1</div>
+          <div className="m-row-sub mt-2">App package: com.jarvis.local · build {APP_BUILD}</div>
+          <div className="m-row-sub mt-1">
+            If this number does not match the APK you downloaded, the phone is still running an older build.
+          </div>
         </Card>
       </Section>
     </div>

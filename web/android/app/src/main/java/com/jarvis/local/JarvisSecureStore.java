@@ -63,8 +63,12 @@ public final class JarvisSecureStore {
         String payload = Base64.encodeToString(iv, Base64.NO_WRAP) + ":" + Base64.encodeToString(encrypted, Base64.NO_WRAP);
         // commit(), not apply(): the provider form reports success only after
         // the credential is actually on disk, so a kill right after Save cannot
-        // lose the key while the config row survives.
-        prefs(context).edit().putString(name, payload).commit();
+        // lose the key while the config row survives. A false result is a real
+        // failure (full disk / blocked storage) and must not be reported as a
+        // successful save.
+        if (!prefs(context).edit().putString(name, payload).commit()) {
+            throw new java.io.IOException("Android could not commit the encrypted credential to disk.");
+        }
     }
 
     /** Returns "" when absent or undecryptable (never throws a secret). */
@@ -85,7 +89,9 @@ public final class JarvisSecureStore {
     }
 
     public static synchronized void remove(Context context, String name) {
-        prefs(context).edit().remove(name).commit();
+        if (!prefs(context).edit().remove(name).commit()) {
+            throw new IllegalStateException("Android could not remove the encrypted credential from disk.");
+        }
     }
 
     public static synchronized boolean has(Context context, String name) {

@@ -40,6 +40,35 @@ interface ProviderDraft {
 
 const EMPTY_DRAFT: ProviderDraft = { provider: "openrouter", model: "", baseUrl: "", key: "" };
 
+/**
+ * A whole save must end even if Android never answers a bridge call. The
+ * per-call timeouts protect individual native calls, but a screen-level
+ * deadline also covers the verification read and the refresh that follows.
+ */
+function withDeadline<T>(promise: Promise<T>, label: string, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () =>
+        reject(
+          new Error(
+            `${label} did not finish within ${Math.round(ms / 1000)}s. Nothing was reported as saved. Open Settings → Diagnostics and copy the report.`,
+          ),
+        ),
+      ms,
+    );
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 export default function MindScreen({ onNavigate }: ScreenProps) {
   const ai = getJarvisAI();
   const [tab, setTab] = useState<Tab>("providers");
@@ -55,6 +84,7 @@ export default function MindScreen({ onNavigate }: ScreenProps) {
   const [searchHits, setSearchHits] = useState<MemoryRecord[] | null>(null);
   const [draft, setDraft] = useState<ProviderDraft>(EMPTY_DRAFT);
   const [busy, setBusy] = useState<string | null>(null);
+  const [stage, setStage] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [models, setModels] = useState<{ id: string; label: string }[]>([]);
   const [vault, setVault] = useState<string>("checking");
@@ -102,11 +132,15 @@ export default function MindScreen({ onNavigate }: ScreenProps) {
     setBusy(label);
     setNotice(null);
     try {
-      const message = await task();
+      // Every row is backed by a real native call. Give the whole operation a
+      // hard ceiling so a blocked SQLite/Keystore call can never leave the
+      // button on “Saving…” after it is tapped.
+      const message = await withDeadline(task(), label === "save" ? "Saving the provider" : "That operation", label === "save" ? 45_000 : 180_000);
       if (message) setNotice(message);
     } catch (e) {
       setNotice(e instanceof Error ? e.message : "That operation failed.");
     } finally {
+      setStage(null);
       setBusy(null);
     }
   };
@@ -114,9 +148,11 @@ export default function MindScreen({ onNavigate }: ScreenProps) {
   const saveProvider = () =>
     run("save", async () => {
       // 1) The schema must exist before the first write.
+      setStage("Opening the on-device database…");
       await initMind();
       const hadKey = Boolean(draft.key.trim());
       // 2) Persist config + key (config in SQLite, key in the Keystore).
+      setStage(hadKey ? "Encrypting the key and saving the provider…" : "Saving the provider…");
       const config = await ai.gateway.upsert({
         id: draft.id,
         provider: draft.provider,
@@ -126,6 +162,7 @@ export default function MindScreen({ onNavigate }: ScreenProps) {
         roles: ["default"],
       });
       // 3) Prove it: read the provider back from the database.
+      setStage("Reading the provider back from SQLite…");
       const reloaded = await ai.gateway.load(true);
       const confirmed = reloaded.find((entry) => entry.id === config.id);
       if (!confirmed) {
@@ -318,6 +355,11 @@ export default function MindScreen({ onNavigate }: ScreenProps) {
                   Clear
                 </button>
               </div>
+              {busy === "save" && (
+                <p className="m-small mt-2" style={{ color: "#bae6fd" }}>
+                  {stage || "Saving…"}
+                </p>
+              )}
               <p className="m-row-sub mt-2">
                 Requests go directly from this phone to the provider. HTTPS is required; a LAN HTTP endpoint needs the
                 development option in the provider definition. Keys are encrypted with Android Keystore and never enter

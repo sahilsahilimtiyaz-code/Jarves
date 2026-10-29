@@ -14,6 +14,7 @@ export default function HomeScreen({ onNavigate }: ScreenProps) {
   const connected = useStore((s) => s.connected);
   const orbState = useStore((s) => s.orbState);
   const tools = useStore((s) => s.tools);
+  const chat = useStore((s) => s.chat);
   const health = useBackendHealth(20_000);
   const provider = useProviderStatus();
   const device = useDeviceInfo(true, 20_000);
@@ -58,6 +59,10 @@ export default function HomeScreen({ onNavigate }: ScreenProps) {
   };
 
   const recent = tools.slice(-4).reverse();
+  const mission = chat
+    .filter((entry) => entry.role === "assistant" || entry.role === "error")
+    .slice(-3)
+    .reverse();
 
   return (
     <div className="pb-2">
@@ -178,6 +183,50 @@ export default function HomeScreen({ onNavigate }: ScreenProps) {
           </div>
         </Card>
       )}
+
+      <Section
+        title="Mission log"
+        action={
+          <button type="button" className="m-row-sub" onClick={() => onNavigate("chat")}>
+            Open dialogue →
+          </button>
+        }
+      >
+        {mission.length === 0 ? (
+          <Card>
+            <p className="m-small">
+              No mission entries yet. Ask a question or run a phone action; the real result is recorded here.
+            </p>
+          </Card>
+        ) : (
+          <Card>
+            {mission.map((entry) => (
+              <div className="m-row" key={entry.id}>
+                <span className="m-dot" data-state={entry.role === "error" ? "offline" : "online"} />
+                <div className="m-row-main">
+                  <div className="m-row-title" style={{ fontSize: 12.5 }}>
+                    {entry.role === "error" ? "SYSTEM" : "JARVIS"}
+                    <span className="m-row-sub" style={{ marginLeft: 8 }}>
+                      {new Date(entry.ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                  </div>
+                  <div
+                    className="m-row-sub"
+                    style={{
+                      display: "-webkit-box",
+                      WebkitLineClamp: 2,
+                      WebkitBoxOrient: "vertical",
+                      overflow: "hidden",
+                    }}
+                  >
+                    {entry.text}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </Card>
+        )}
+      </Section>
 
       <Section title="This phone" action={<span className="m-row-sub">measured on device</span>}>
         <div className="grid grid-cols-2 gap-3">

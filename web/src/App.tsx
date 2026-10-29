@@ -266,8 +266,10 @@ export default function App() {
   const forceMobile =
     typeof window !== "undefined" && new URLSearchParams(window.location.search).has("mobile");
 
-  if (viewport.w < 900 || forceMobile) {
-    // Android-first mobile shell: dedicated screens + bottom navigation.
+  if (isAndroid() || viewport.w < 900 || forceMobile) {
+    // Android-first mobile shell: dedicated screens + bottom navigation. The
+    // APK must never fall back to the desktop HUD on a tablet or in landscape,
+    // because the startup permission gate and native bridge live here.
     return (
       <Suspense fallback={<div className="fixed inset-0 bg-[#04070f]" />}>
         <MobileShell />

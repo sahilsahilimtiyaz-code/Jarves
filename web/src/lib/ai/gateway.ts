@@ -327,7 +327,15 @@ export class AIGateway {
     // (`clearKey`), so editing a model can never silently break the provider.
     const newKey = (input.apiKey ?? "").trim();
     if (newKey) await (await this.vault()).set(config.id, newKey);
-    await this.save(next);
+    try {
+      await this.save(next);
+    } catch (error) {
+      // Never leave a key behind for a provider that was not persisted. The
+      // old order wrote the key first and then leaked it if the config write
+      // failed, so a retry could appear to use a key the user had replaced.
+      if (newKey) await (await this.vault()).remove(config.id).catch(() => undefined);
+      throw error;
+    }
     // The provider is already durable at this point; an audit-log failure must
     // not turn a successful save into a scary error in the form.
     await this.store

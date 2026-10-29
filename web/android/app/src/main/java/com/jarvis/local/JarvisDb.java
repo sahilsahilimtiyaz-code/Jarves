@@ -57,6 +57,14 @@ public class JarvisDb extends SQLiteOpenHelper {
     }
 
     @Override
+    public void onOpen(SQLiteDatabase db) {
+        super.onOpen(db);
+        // Never fail a save instantly because another connection is writing.
+        // The JS deadline still bounds the visible operation.
+        db.execSQL("PRAGMA busy_timeout = 5000");
+    }
+
+    @Override
     public void onUpgrade(SQLiteDatabase db, int oldVersion, int newVersion) {
         // Version 1 is the first schema. Future migrations are additive and
         // must never drop user memory; the JS layer owns PRAGMA user_version

@@ -362,6 +362,115 @@
   color: #f0f9ff;
 }
 
+/* Centre “JARVIS” button — the mic/core affordance from the reference. */
+.m-nav-btn[data-core="true"] {
+  color: var(--m-accent);
+  font-size: 8px;
+  gap: 3px;
+}
+.m-nav-core {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 54px;
+  height: 54px;
+  margin-top: -24px;
+  border-radius: 50%;
+  border: 1px solid rgba(148, 197, 255, 0.36);
+  background:
+    radial-gradient(circle at 50% 35%, rgba(125, 211, 252, 0.34), rgba(8, 20, 36, 0.96) 68%);
+  box-shadow:
+    0 0 0 5px rgba(4, 9, 18, 0.9),
+    0 0 28px -4px rgba(56, 189, 248, 0.55),
+    inset 0 1px 0 rgba(255, 255, 255, 0.18);
+  color: #eafaff;
+}
+.m-nav-btn[data-core="true"][data-active="true"] .m-nav-core {
+  border-color: rgba(125, 211, 252, 0.85);
+  box-shadow:
+    0 0 0 5px rgba(4, 9, 18, 0.9),
+    0 0 38px 2px rgba(56, 189, 248, 0.72),
+    inset 0 1px 0 rgba(255, 255, 255, 0.26);
+}
+.m-nav-btn[data-core="true"][data-active="true"]::after { display: none; }
+
+/* ── First-launch access gate ──────────────────────────────────────────── */
+.m-gate {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding-bottom: calc(env(safe-area-inset-bottom, 0px) + 28px);
+}
+.m-gate-head { text-align: center; margin-bottom: 18px; }
+.m-gate-orb {
+  position: relative;
+  width: 116px;
+  height: 116px;
+  margin: 0 auto 18px;
+  display: grid;
+  place-items: center;
+  color: #dff6ff;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(56, 189, 248, 0.22), transparent 68%);
+  filter: drop-shadow(0 0 22px rgba(56, 189, 248, 0.35));
+}
+.m-gate-ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1px solid rgba(125, 211, 252, 0.4);
+  border-top-color: rgba(125, 211, 252, 0.95);
+  border-right-color: transparent;
+  animation: m-gate-spin 9s linear infinite;
+}
+.m-gate-ring--inner {
+  inset: 14px;
+  border-color: rgba(125, 211, 252, 0.18);
+  border-bottom-color: rgba(125, 211, 252, 0.8);
+  animation-direction: reverse;
+  animation-duration: 6s;
+}
+@keyframes m-gate-spin { to { transform: rotate(360deg); } }
+.m-gate-copy { max-width: 340px; margin: 10px auto 0; color: var(--m-muted); }
+.m-gate-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 0;
+  border-bottom: 1px solid rgba(148, 197, 255, 0.08);
+}
+.m-gate-row:last-child { border-bottom: 0; padding-bottom: 0; }
+.m-gate-row:first-child { padding-top: 0; }
+.m-gate-required {
+  font-family: "Geist Mono", monospace;
+  font-size: 8px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: #fcd34d;
+  margin-left: 6px;
+}
+.m-gate-warning {
+  margin: 0 0 12px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  border: 1px solid rgba(251, 113, 133, 0.32);
+  background: rgba(251, 113, 133, 0.08);
+  font-size: 12px;
+  line-height: 1.5;
+  color: #fecdd3;
+}
+.m-gate-actions { display: flex; flex-direction: column; gap: 8px; }
+.m-gate-actions .m-btn { width: 100%; }
+.m-gate-foot {
+  margin-top: 16px;
+  text-align: center;
+  font-family: "Geist Mono", monospace;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  color: var(--m-faint);
+}
+
 /* ── Core stage ────────────────────────────────────────────────────────── */
 .m-core {
   position: relative;
