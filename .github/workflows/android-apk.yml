@@ -1,0 +1,95 @@
+# Builds a real, installable JARVIS Android debug APK.
+#
+# The Android project (web/android) is a standard Capacitor wrapper around the
+# original Vite front-end: no Electron code is bundled. The FastAPI backend is
+# NOT part of the APK — the app connects to a user-configured backend host
+# (see docs/android/BACKEND.md).
+#
+# The APK is uploaded as a workflow artifact "JARVIS-Android-debug-APK":
+#   Repo → Actions tab → this run → Artifacts → JARVIS-Android-debug-APK.
+#
+# These machines have neither Gradle nor the Android SDK preinstalled; the
+# Gradle wrapper (web/android/gradlew + wrapper.jar) downloads the pinned
+# Gradle distribution and AGP pulls the SDK pieces automatically.
+
+name: android-apk
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main, master]
+    paths:
+      - "web/**"
+      - ".github/workflows/android-apk.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build debug APK
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Set up JDK 21 (Gradle cache enabled)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: gradle
+
+      - name: Install, test and build the web app (no Electron)
+        working-directory: web
+        run: |
+          set -euo pipefail
+          npm ci --no-audit --no-fund
+          npm test
+          npm run build
+
+      - name: Sync web build into the Android project
+        working-directory: web
+        run: npx cap sync android
+
+      - name: Assemble debug APK
+        working-directory: web/android
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon --stacktrace
+
+      - name: Verify the APK really exists and is not empty
+        id: verify
+        run: |
+          set -euo pipefail
+          APK="web/android/app/build/outputs/apk/debug/app-debug.apk"
+          if [ ! -f "$APK" ]; then
+            echo "::error::Build finished but app-debug.apk was not produced"
+            exit 1
+          fi
+          SIZE=$(stat -c%s "$APK")
+          if [ "$SIZE" -lt 200000 ]; then
+            echo "::error::app-debug.apk is suspiciously small (${SIZE} bytes)"
+            exit 1
+          fi
+          SHA=$(sha256sum "$APK" | cut -d' ' -f1)
+          {
+            echo "size=$SIZE"
+            echo "sha256=$SHA"
+          } >> "$GITHUB_OUTPUT"
+          echo "app-debug.apk: ${SIZE} bytes, sha256 ${SHA}"
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: JARVIS-Android-debug-APK
+          path: web/android/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error

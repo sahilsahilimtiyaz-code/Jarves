@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  J.A.R.V.I.S. — Android shell (Capacitor).
+
+  Permission posture:
+   - INTERNET   : required to reach the user-configured JARVIS backend host
+                  (LAN or HTTPS). No other network privilege is used.
+   - RECORD_AUDIO + CAMERA : declared so the WebView may run the original
+                  browser voice pipeline (getUserMedia + MediaRecorder →
+                  backend /api/stt) and the local camera preview
+                  (WebcamFeed). Both are DANGEROUS-level runtime permissions:
+                  they are requested lazily from the UI (mic button /
+                  camera sheet) and remain denyable in system settings.
+
+  There is deliberately no:
+   - Background microphone / foreground-service listening (wake-word runs
+     only while the app is foreground; documented limitation).
+   - AccessibilityService abuse. Android phone-control tooling is NOT
+     implemented; PC tools execute on the connected backend host only.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application
+        android:allowBackup="true"
+        android:icon="@mipmap/ic_launcher"
+        android:label="@string/app_name"
+        android:roundIcon="@mipmap/ic_launcher_round"
+        android:supportsRtl="true"
+        android:theme="@style/AppTheme">
+
+        <activity
+            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|locale|smallestScreenSize|screenLayout|uiMode|navigation"
+            android:name=".MainActivity"
+            android:label="@string/title_activity_main"
+            android:theme="@style/AppTheme.NoActionBarLaunch"
+            android:launchMode="singleTask"
+            android:exported="true"
+            android:resizeableActivity="true">
+
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+        </activity>
+
+        <provider
+            android:name="androidx.core.content.FileProvider"
+            android:authorities="${applicationId}.fileprovider"
+            android:exported="false"
+            android:grantUriPermissions="true">
+            <meta-data
+                android:name="android.support.FILE_PROVIDER_PATHS"
+                android:resource="@xml/file_paths"></meta-data>
+        </provider>
+    </application>
+
+    <!-- Permissions -->
+
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
+    <uses-permission android:name="android.permission.CAMERA" />
+    <!-- SharedPreferences/UI state only — explicit "never location/sms/etc." -->
+</manifest>

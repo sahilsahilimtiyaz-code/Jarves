@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  J.A.R.V.I.S. HUD palette — overrides the stock Capacitor colors so the
+  splash theme / WebView boot / system UI match the ink-and-cyan HUD
+  (#03070f canvas, #22d3ee reactor) instead of the indigo defaults.
+-->
+<resources>
+    <color name="colorPrimary">#22D3EE</color>
+    <color name="colorPrimaryDark">#03070F</color>
+    <color name="colorAccent">#7DD3FC</color>
+    <color name="ic_launcher_background">#03070F</color>
+</resources>

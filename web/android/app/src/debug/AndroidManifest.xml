@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  DEBUG-ONLY manifest overlay: permits cleartext (plain HTTP) traffic so the
+  handset can reach a JARVIS backend bound to a LAN address such as
+  http://192.168.1.20:7341 (the desktop backend has no TLS of its own).
+
+  SECURITY: this weakens transport security ONLY for the debug build that is
+  distributed through GitHub Actions artifacts. A release build MUST NOT ship
+  cleartext; host the backend behind HTTPS (reverse proxy / Tailscale) and
+  build `assembleRelease` with a signing key instead.
+-->
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <application android:usesCleartextTraffic="true">
+    </application>
+</manifest>
