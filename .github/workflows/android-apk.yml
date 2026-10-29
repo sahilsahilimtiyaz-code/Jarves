@@ -70,7 +70,7 @@ jobs:
           test -d "$ANDROID_HOME/platforms/android-35"
           echo "ANDROID_HOME=$ANDROID_HOME" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$ANDROID_SDK_ROOT" >> "$GITHUB_ENV"
-          java -version
+          java -version || echo "::warning::java is not on PATH; Gradle will fail, check setup-java"
 
       - name: Install dependencies (lockfile, no upgrades)
         working-directory: web
