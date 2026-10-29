@@ -30,12 +30,16 @@ import ToolFeed from "./components/Tools/ToolFeed";
 // ArticleReader).
 const Lightbox      = lazy(() => import("./components/Media/Lightbox"));
 const ArticleReader = lazy(() => import("./components/Media/ArticleReader"));
+// The mobile shell owns Three.js + the native bridge UI; keep it out of the
+// desktop bundle so Android only downloads it on the mobile path.
+const MobileShell = lazy(() => import("./mobile/MobileShell"));
 import { getHealth } from "./lib/api";
 import { useStore, nextId, type MediaKind } from "./lib/store";
 import { refreshVoiceProfile, streamSpeak } from "./lib/voice";
 import { wsClient } from "./lib/ws";
-import { initBackend } from "./lib/backend";
+import { initBackend, backendConfigured } from "./lib/backend";
 import { getAdapter, isAndroid, installAndroidLinkInterceptor } from "./platform";
+import { voicePipeline } from "./lib/voicePipeline";
 
 const GREETING_SESSION_KEY = "jarvis.greeting.sent.v1";
 
@@ -134,7 +138,16 @@ export default function App() {
       if (offLinks) offLinksRef.current = offLinks;
     })();
 
-    const healthNow = () => getHealth().then(useStore.getState().setHealth).catch(() => undefined);
+    const healthNow = () => {
+      // Android with no backend must not probe the app-shell origin; it is not
+      // a JARVIS server and would only produce noise. The mobile Settings
+      // screen runs the real connection test once an address exists.
+      if (isAndroid() && !backendConfigured()) {
+        useStore.getState().setConnected(false);
+        return Promise.resolve();
+      }
+      return getHealth().then(useStore.getState().setHealth).catch(() => undefined);
+    };
     refreshVoiceProfile();
     healthNow();
     const id = setInterval(healthNow, 15_000);
@@ -179,6 +192,7 @@ export default function App() {
   useEffect(() => {
     let lastLen = 0;
     let lastId = "";
+    let lastSpokenId = "";
     return useStore.subscribe((state) => {
       const last = state.chat[state.chat.length - 1];
       if (!last || last.role !== "assistant") return;
@@ -189,6 +203,16 @@ export default function App() {
       const grew = last.text.length !== lastLen;
       lastLen = last.text.length;
       if (grew || !last.streaming) {
+        // Android WebView speechSynthesis is often silent/voiceless: use the
+        // native TTS bridge once the reply is complete. Desktop keeps the
+        // original streaming sentence queue untouched.
+        if (isAndroid()) {
+          if (!last.streaming && last.text.trim() && lastSpokenId !== last.id) {
+            lastSpokenId = last.id;
+            if (useStore.getState().voiceEnabled) void voicePipeline.speak(last.text);
+          }
+          return;
+        }
         console.log("[App:TTS] streamSpeak id=%s len=%d grew=%s isFinal=%s streaming=%s", last.id, last.text.length, grew, !last.streaming, last.streaming);
         streamSpeak(last.id, last.text, !last.streaming);
       }
@@ -239,47 +263,15 @@ export default function App() {
     );
   }
 
-  if (viewport.w < 900) {
+  const forceMobile =
+    typeof window !== "undefined" && new URLSearchParams(window.location.search).has("mobile");
+
+  if (viewport.w < 900 || forceMobile) {
+    // Android-first mobile shell: dedicated screens + bottom navigation.
     return (
-      <div className="relative w-screen h-screen overflow-hidden">
-        <Atmosphere />
-        <Orb />
-        <CornerFrame />
-        <TopBar />
-        <StatusBar />
-
-        <div className="fixed left-4 right-4 top-[76px] z-20 grid h-[136px] grid-cols-[minmax(0,1fr)_minmax(168px,190px)] gap-3 pointer-events-auto"
-             style={{ top: "calc(76px + env(safe-area-inset-top, 0px))", paddingLeft: "env(safe-area-inset-left, 0px)", paddingRight: "env(safe-area-inset-right, 0px)" }}>
-          <div className="min-w-0 overflow-hidden">
-            <DiagPanel />
-          </div>
-          <UptimePanel />
-        </div>
-
-        <div className="fixed left-4 right-4 z-20 min-h-[260px] pointer-events-auto"
-             style={{ top: "calc(224px + env(safe-area-inset-top, 0px))", bottom: "calc(148px + env(safe-area-inset-bottom, 0px))" }}>
-          <ChatPanel />
-        </div>
-
-        {/* CommandBar is NOT height-capped — attachments / suggestions /
-            mic status grow it naturally (desktop parity for autoHeight). */}
-        <div className="fixed left-4 right-4 bottom-16 z-30 pointer-events-auto"
-             style={{ paddingLeft: "env(safe-area-inset-left, 0px)", paddingRight: "env(safe-area-inset-right, 0px)", paddingBottom: "env(safe-area-inset-bottom, 0px)" }}>
-          <CommandBar />
-        </div>
-
-        {/* Mission sheets + connection status — new, additive for touch */}
-        <MobileSheets />
-
-        <Reticle />
-        <Suspense fallback={null}>
-          <Lightbox />
-          <ArticleReader />
-        </Suspense>
-        <ConfirmModal />
-        <DropZone />
-        <BootSequence />
-      </div>
+      <Suspense fallback={<div className="fixed inset-0 bg-[#04070f]" />}>
+        <MobileShell />
+      </Suspense>
     );
   }
 

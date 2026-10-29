@@ -1,16 +1,14 @@
 # Builds a real, installable JARVIS Android debug APK.
 #
-# The Android project (web/android) is a standard Capacitor wrapper around the
-# original Vite front-end: no Electron code is bundled. The FastAPI backend is
-# NOT part of the APK — the app connects to a user-configured backend host
-# (see docs/android/BACKEND.md).
+# The Android project (web/android) is a standard Capacitor 7 wrapper around the
+# original Vite front-end. The FastAPI backend is NOT part of the APK — the app
+# connects to a user-configured backend host (docs/android/BACKEND.md).
 #
-# The APK is uploaded as a workflow artifact "JARVIS-Android-debug-APK":
-#   Repo → Actions tab → this run → Artifacts → JARVIS-Android-debug-APK.
+# The APK is uploaded as the artifact "JARVIS-Android-debug-APK":
+#   Repo → Actions → android-apk → run → Artifacts → JARVIS-Android-debug-APK
 #
-# These machines have neither Gradle nor the Android SDK preinstalled; the
-# Gradle wrapper (web/android/gradlew + wrapper.jar) downloads the pinned
-# Gradle distribution and AGP pulls the SDK pieces automatically.
+# The job never publishes an artifact after a failed build: the verification
+# step fails the run before upload if the APK is missing or truncated.
 
 name: android-apk
 
@@ -25,39 +23,66 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: android-apk-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build:
     name: Build debug APK
     runs-on: ubuntu-latest
+    timeout-minutes: 40
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Node 20
+      - name: Set up Node 20 (npm cache)
         uses: actions/setup-node@v4
         with:
           node-version: 20
           cache: npm
           cache-dependency-path: web/package-lock.json
 
-      - name: Set up JDK 21 (Gradle cache enabled)
+      - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: 21
-          cache: gradle
 
-      - name: Install, test and build the web app (no Electron)
+      - name: Set up Android SDK (platform 35 + build-tools)
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK packages
+        run: |
+          set -euo pipefail
+          sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+          yes | sdkmanager --licenses > /dev/null || true
+          echo "ANDROID_HOME=$ANDROID_HOME"
+
+      - name: Install dependencies (lockfile, no upgrades)
         working-directory: web
         run: |
           set -euo pipefail
           npm ci --no-audit --no-fund
-          npm test
-          npm run build
 
-      - name: Sync web build into the Android project
+      - name: Run unit tests
         working-directory: web
-        run: npx cap sync android
+        run: |
+          set -euo pipefail
+          npm test
+
+      - name: Production web build
+        working-directory: web
+        run: |
+          set -euo pipefail
+          npm run build
+          test -s dist/index.html
+
+      - name: Sync build + native plugins into the Android project
+        working-directory: web
+        run: |
+          set -euo pipefail
+          npx cap sync android
 
       - name: Assemble debug APK
         working-directory: web/android
@@ -66,7 +91,7 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Verify the APK really exists and is not empty
+      - name: Verify the APK exists, is non-empty and contains the web bundle
         id: verify
         run: |
           set -euo pipefail
@@ -76,8 +101,12 @@ jobs:
             exit 1
           fi
           SIZE=$(stat -c%s "$APK")
-          if [ "$SIZE" -lt 200000 ]; then
-            echo "::error::app-debug.apk is suspiciously small (${SIZE} bytes)"
+          if [ "$SIZE" -lt 1000000 ]; then
+            echo "::error::app-debug.apk is suspiciously small (${SIZE} bytes) — the web bundle is probably missing"
+            exit 1
+          fi
+          if ! unzip -l "$APK" | grep -q "assets/public/index.html"; then
+            echo "::error::APK does not contain assets/public/index.html (cap sync did not copy the HUD)"
             exit 1
           fi
           SHA=$(sha256sum "$APK" | cut -d' ' -f1)
@@ -93,3 +122,16 @@ jobs:
           name: JARVIS-Android-debug-APK
           path: web/android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
+          retention-days: 30
+
+      - name: Upload build logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-build-logs
+          if-no-files-found: ignore
+          retention-days: 7
+          path: |
+            web/android/app/build/reports/**
+            web/android/build/reports/**
+            web/npm-debug.log

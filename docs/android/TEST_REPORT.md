@@ -1,78 +1,113 @@
 # JARVIS Android — Test Report
 
-Honest record of what was verified for this Android/Capacitor port, when,
-and how. Where a check could not run in the working environment (a phone
-with neither Android SDK nor Gradle installed), it is stated, and CI is the
-arbiter.
+Record of the checks actually performed for this redesign/fix, the results, and
+what remains unverified. Nothing in this file is inferred from a green check
+that did not run.
 
-## Environment of the checks performed
+## Environment
 
-- Android phone (this device) running the app's Linux environment:
-  Node 24 / npm 11, TypeScript 5.6, Vite 5.4, no Java, no Android SDK,
-  ~1.4 GB free RAM — Gradle/AVD workloads are therefore reserved for GitHub
-  Actions hardware, where the APK artifact is produced.
-- The repository was audited, edited and re-tested around this
-  environment; `web/android` is the standard Capacitor 7 wrapper verified
-  against the installed `@capacitor/*` 7.6.10 packages.
+- Cloud Linux VM, Node.js 24.21 / npm 11.19 (project lockfile used with `npm ci`).
+- JDK 21 (Temurin, project-local) and Android SDK 35 + build-tools 35.0.0
+  installed locally only for verification; neither is committed.
+- No physical Android device and no browser automation available (the headless
+  Chromium install failed host-library checks and there is no root to add the
+  required system packages). Device/browser-only checks are listed as pending.
 
-## Checks actually executed locally — all green
+## Checks executed — results
 
-| Check | Command | Result |
-|-------|---------|--------|
-| Type check of the whole front-end (incl. platform adapter, mobile sheets, backend resolver, ws plumbing) | `npm run build`'s `tsc -b` step, executed in the tree | ✅ 0 errors (several iterations) |
-| Production web build (this is what the APK embeds) | `npm run build` (Vite) | ✅ 437 modules, main chunk 437 KB / 134 KB gzip; lazy chunks for Lightbox/Model3DViewer/ArticleReader/NeuralGalaxy intact |
-| Backend resolver & platform adapter unit tests | `npm test` (`node --test`) | ✅ 20/20 pass — 12 new (`tests/platform.test.mjs`) + 8 pre-existing wake-word tests |
-| Wake word suite (pre-existing) | included above | ✅ pass |
-| Android project structure sanity | listing/diff discipline of `web/android` | ✅ wrapper jar+properties, manifests (main/debug), res values, mipmaps, capacitor module wiring present; generated dirs excluded per `android/.gitignore` |
-| Icon/splash assets | PIL-generated, visually reviewed launcher, adaptive foreground and splash (portrait and land) | ✅ art centred, densities present |
-| Node-version consistency | `node/` v24 local; CI pins Node 20 for the web build; `package-lock.json` locked and committed | ✅ |
+| # | Check | Command | Result |
+|---|---|---|---|
+| 1 | Dependency install from lockfile | `npm ci` (web) | ✅ exit 0 |
+| 2 | Unit tests (wake word + backend/platform + new mobile suite) | `npm test` | ✅ **31/31 pass** |
+| 3 | TypeScript + production build | `npm run build` | ✅ exit 0 |
+| 4 | Bundle split (mobile/Three.js lazy) | build output | ✅ desktop main 446.97 kB (137.76 kB gzip); `MobileShell` chunk 542.45 kB (140.11 kB gzip) loaded only on the mobile path |
+| 5 | Capacitor sync of web build + plugins | `npx cap sync android` | ✅ 5 plugins detected, sync finished |
+| 6 | Android debug build | `./gradlew assembleDebug --no-daemon` (JDK 21, SDK 35) | ✅ `BUILD SUCCESSFUL`, 222 tasks |
+| 7 | APK exists / non-trivial size | `stat` | ✅ 6,550,482 bytes |
+| 8 | APK contains the HUD | `unzip -l` | ✅ `assets/public/index.html` + hashed JS/CSS present |
+| 9 | Native bridge is packaged | dex inspection | ✅ `JarvisNative` symbols in `classes4.dex` |
+| 10 | Manifest permissions | `aapt2 dump permissions` | ✅ INTERNET, RECORD_AUDIO, CAMERA, POST_NOTIFICATIONS |
+| 11 | Manifest behaviour | `aapt2 dump xmltree` | ✅ `<queries>` present; `windowSoftInputMode=0x10` (adjustResize) |
+| 12 | Backend syntax integrity (unchanged backend) | `python3 -m compileall -q jarvis` | ✅ exit 0 |
+| 13 | APK checksum | `sha256sum` | `2c0b1df0e824c8b7b51ae172d749907d8f7ad19982977ff09943d85227c26f0d` |
 
-Notable build details:
-- The single known Vite warning is the pre-existing voice.ts double
-  (dynamic+static) import notice; harmless, module stays in the main chunk.
-- `cap add/sync android` produced **no** plugin list changes (the port's
-  Android adapter uses the `@capacitor/core` runtime only).
+Local APK (not committed; build output): `web/android/app/build/outputs/apk/debug/app-debug.apk`.
+The official downloadable artifact is produced by GitHub Actions:
+**`JARVIS-Android-debug-APK`** (contains `app-debug.apk`).
 
-## Checks delegated to GitHub Actions (cannot run here)
+### New automated coverage (12 tests in `web/tests/mobile.test.mjs`)
 
-| Check | Where it runs | What proves it |
-|-------|---------------|----------------|
-| Full APK build (`web/android` `gradlew assembleDebug`, JDK 21, Gradle 8.11.1, AGP 8.7.2) | Actions runner `ubuntu-latest` | workflow executes `npm ci && npm test && npm run build`, `npx cap sync android`, then the Gradle build; failure surfaces as a red run (no fake success path) |
-| APK existence/size assertion | `Verify the APK really exists...` step | refuses to upload a missing/truncated APK (`<200 KB` treated as suspicious) |
-| Artifact publication | `actions/upload-artifact@v4` | artifact `JARVIS-Android-debug-APK` contains exactly `app-debug.apk` from `web/android/app/build/outputs/apk/debug/` |
+- `open/launch …` → `open_app`; bare `open settings` → app settings; Wi-Fi /
+  Bluetooth / display / apps targets resolved correctly.
+- Battery, device info and clock commands map to local reads.
+- Clipboard read/write preserves the exact text payload.
+- Notifications require explicit approval.
+- Ordinary conversation (“weather”, “explain quantum entanglement”, empty
+  input) is **not** hijacked into an action.
+- Voice state machine: full happy path, denial/error terminal states, illegal
+  events do not resurrect a session, orb mapping.
+- Speech text normalisation strips markdown before TTS.
 
-If the workflow output above holds, the produced artifact is a real APK; the
-verification step and Gradle's output are the receipts. There is no
-circumstance in this design where a red run still yields the artifact.
+Existing suites remain green: 8 wake-word tests + 11 backend/platform tests.
 
-## Test coverage map for the new Android pieces
+## Checks that could NOT run here
 
-| New behaviour | Test |
-|---------------|------|
-| `normalizeBackendUrl` (LAN address auto-`http://`, trailing path strip, invalid input → `""`) | `platform.test.mjs::normalizeBackendUrl:*` |
-| `apiUrl` empty-base == same-origin (identical desktop behaviour) | `platform.test.mjs::apiUrl:*` |
-| `wsUrl` configured base → `ws(s)://` rewrite | `platform.test.mjs` (base and no-backend cases) |
-| `wsBackoffDelay` ramp + cap | `platform.test.mjs::wsBackoffDelay` |
-| `detectPlatform` electron/android/web precedence | 4 dedicated cases |
+| Check | Why | Status |
+|---|---|---|
+| Headless UI screenshot / visual regression | Chromium requires OS libs (`libnss3`, `libatk…`) and there is no root; Playwright install failed host validation | **Blocked — not performed** |
+| Actual microphone capture and transcript | Needs a physical device with a speech-recognition service | **Pending on device** |
+| Audible TTS output, voice selection | Needs device audio | **Pending on device** |
+| App launching / settings intents / notification display | Needs device PackageManager and notification service | **Pending on device** |
+| Camera/file pickers and backend vision analysis | Needs device + backend | **Pending on device** |
+| WebGL smoothness/thermals on Galaxy A54 | Needs device GPU | **Pending on device** |
+| GitHub Actions run result | Workflow executes after the push; the run page is the receipt | **To confirm in Actions** |
+| Electron desktop packaging | Unchanged; not rebuilt here (no Electron dependencies installed) | **Not run** |
 
-Front-end interactions that run only in a real WebView (actual mic/camera
-permission prompts, resume reconnect, share-sheet downloads) are exercised
-manually on-device and are marked as behavioral notes, not automated tests —
-stated here so that no assumption is silent.
+No claim is made that the APK’s microphone, speaker, camera or phone actions
+work merely because Gradle compiled them.
 
-## Known limitations recorded for QA
+## Manual device checklist — Samsung Galaxy A54, Android 16
 
-1. Wake word only while app is foreground (no background mic listening).
-2. Debug APK permits cleartext for LAN backends; release build must require
-   HTTPS.
-3. `speechSynthesis` voices vary per WebView; the app relies on the backend
-   TTS in that case (documented in FEATURE_PARITY.md §Voice).
-4. The backend's `permissions.mode: bypass`, default `config.yaml`, implies
-   silent CAUTION/DANGEROUS execution on an open port — ops/consider a
-   firewall/tunnel (BACKEND.md §Transport).
+Preconditions: install the CI artifact; have a JARVIS backend reachable on the
+same Wi-Fi (or test the no-backend behaviour first).
 
-## Sign-off
+| Area | Step | Expected |
+|---|---|---|
+| Install | Open APK, allow unknown source | Splash then mobile Home; no white flash |
+| Layout | Rotate portrait/landscape, gesture nav on | Nothing under system bars; nav reachable; no horizontal scroll |
+| Bottom nav | Tap all five tabs | Each loads its screen; active tab clearly marked |
+| Home core | Observe 10 s | Rings rotate at different speeds, particles drift, segments pulse; no jank |
+| Core states | Start mic; send a request; play TTS; go offline | Listening reacts to voice; thinking accelerates; speaking reacts; offline dims and labels OFFLINE |
+| Background | Home button, return | Animation resumes once; no duplicate loops/battery spike |
+| Permissions | First mic tap | Android runtime prompt; deny → visible guidance, no crash; re-enable in Settings → allow → works |
+| STT | Tap mic, say “Open Wi-Fi settings” | Partial transcript appears; Wi-Fi settings opens; real result logged |
+| STT variants | “What is my battery level?” / “Open YouTube” / “What is on my clipboard?” | Real battery %, YouTube launches if installed (else honest message), clipboard text or empty notice |
+| TTS | Settings → Voice → Test voice output | Audible speech; Stop stops it; core shows SPEAKING only while audio plays |
+| Chat | With backend configured, send a message | User bubble, thinking indicator, streamed assistant text, spoken reply |
+| Cancel | Send a long request, tap stop | Generation stops; no fake answer |
+| Retry | Tap Retry on last reply | Request re-sent without duplicate user bubble |
+| Errors | Stop backend, send message | Explicit offline error; no infinite spinner; no “online” badge |
+| Backend | Change address, test with wrong IP then right IP | Failure guidance then online latency/model/tools |
+| Phone actions | Settings shortcuts: Wi-Fi/Bluetooth/Display/App info | Correct system screens open; app states it did not change settings |
+| Notification | Tools → Send notification → approve | System prompt (Android 13+) then notification appears |
+| Clipboard | Copy text, read clipboard | Exact text read/written; blocked case explained |
+| Camera | Tools → Analyze photo | Camera opens; result from backend vision; offline case says backend required |
+| Files | Tools → Select a file | SAF picker; real name/type/size shown |
+| Memory | Add/filter/pin/delete local note; search backend memory | Persists across restart; backend memory untouched |
+| Keyboard | Focus composer in Chat | Composer stays above keyboard and nav; send visible |
+| Safe areas | Gesture bar/notch | No controls clipped |
+| Network change | Wi-Fi ↔ mobile data, screen off/on | WebSocket reconnects; no duplicate messages |
+| Long session | 15+ messages, media, camera | No freeze, no memory blow-up, no overheating warning |
 
-Deferred, as designed: the APK artifact itself is produced and verified by
-GitHub Actions on the first run of `android-apk.yml`. Please treat the
-Actions run summary — not this file — as the final build receipt.
+If any item fails, capture `adb logcat -s JarvisNative Capacitor` and the
+diagnostics text from Settings → Diagnostics.
+
+## Notes on test honesty
+
+- The listening animation reacts to the recognizer's real RMS callback; it does
+  not run on a timer. If recognition does not start, the UI stays in
+  REQUESTING_PERMISSION/ERROR rather than showing “Listening”.
+- Chat never fabricates an answer: with no backend the request is not sent and
+  an explicit error is shown.
+- Phone actions return the native result (including “no app matched”, “several
+  matches”, “notification permission not granted”).

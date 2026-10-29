@@ -42,3 +42,6 @@ output/
 
 # Research scratch (embedded repos, wheels, ~360MB, not used at runtime)
 data/research/
+
+# Local build artifacts (APKs, screenshots) are not source
+/artifacts/
